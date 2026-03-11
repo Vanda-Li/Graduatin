@@ -1,48 +1,11 @@
-\chapter{系统设计}
+\chapter{\LaTeX 模板配置与使用}
 
-\section{系统架构设计}
-本系统采用经典的 MVC（Model-View-Controller） 模式作为核心架构框架，并结合 RAG 架构范式 进行了针对性优化。业务架构从上至下划分为用户表现层、业务服务层和持久化数据层，实现了表现逻辑、业务调度与数据存储的深度解耦。
 
-如图 3.1 所示，本系统业务架构以 AI/LLM Core 为核心驱动力，通过四个功能维度协同工作：
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=0.8\textwidth]{image/chap03/structure.png}
-	\caption{系统业务架构图}
-	\label{fig:overleaf-new-proj}
-\end{figure}
+\label{cha:sysu-thesis-latex-install-guide}
 
-表现层作为人机交互的入口，遵循“系统状态可见性”与“流式反馈”的设计原则。负责渲染多轮对话界面、文档管理控制台以及权限配置看板。
+本部分内容将让你能够通过本\LaTeX 模板生成一份可用的pdf，并为后面修改源码撰写毕设做准备。
 
-业务服务层作为系统的核心引擎，采用模块化设计，划分为用户管理、文档处理、问题处理等功能模块。每个模块内部通过清晰的接口定义与数据契约实现高内聚、低耦合，支持独立开发与测试。
-
-数据层负责系统中所有结构化与非结构化资产的存储与检索支撑。其中，关系型数据库（如MySQL）用于存储用户账户信息、权限配置与文档元数据；向量数据库（如Pinecone）则专门用于存储文档的语义向量表示，以支持高效的语义检索。文件存储存储文档原件，确保数据的完整性与可追溯性。
-\section{技术架构选择}
-技术架构遵循系统架构设计，采用分层架构模式，分为前端展示层、API 与安全层、业务逻辑层、数据访问层和数据存储层，同时集成了外部依赖服务。技术架构设计如图 3.2 所示：
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/teche.png}
-	\caption{技术架构图}
-	\label{fig:overleaf-new-proj}
-\end{figure}
-\subsection{前端展示层}
-本系统前端采用响应式设计与多端适配策略，通过媒体查询与弹性布局架构，确保了系统在移动端与个人计算机端的跨平台一致性体验。相比于开发独立的移动端 App，采用响应式多端适配策略能够大幅降低代码维护成本，并在不损失核心 RAG 交互功能的前提下，实现企业移动办公场景与深度桌面办公场景的无缝切换。
-\subsection{API与安全层}
-系统是前后端完全分离的架构模式，通过标准化的通信协议实现表现层与业务层的交互。 
-\begin{enumerate}
-	\item 本系统采用Restful API设计原则，相比于 SOAP 等传统协议，RESTful 架构具备更好的轻量化特性与无状态性（Stateless），能够有效降低服务器端开销，并显著提升接口在不同编程语言间的可维护性与互操作性。
-	\item 本系统采用Spring WebSocket实现流式通信，WebSocket 建立的长连接支持全双工通信，能以极低的延迟将大模型生成的 Token 实时推送至前端，确保了对话过程的连贯性。。
-	\item 本系统使用 JWT 技术，通过在客户端存储加密 Token，实现了无状态鉴权，不仅减轻了服务器负担，且天然支持跨域访问（CORS），增强了系统在云原生环境下的伸缩性
-	\item 本系统利用spring security声明式安全特性，将用户认证与组织标签鉴权逻辑进行深度集成，确保了每个 API 接口的访问均受到严格的 RBAC（基于角色的访问控制）保护，从根本上防止了接口级别的越权攻击。
-\end{enumerate}
-\subsection{业务逻辑层}
-业务逻辑层采用模块化设计，划分为用户管理、文档处理、知识库处理等功能模块。
-\subsubsection{用户管理模块}
-\subsubsection{文档上传与处理模块}
-\subsubsection{知识库检索模块}
-\subsubsection{对话交互模块}
-
-\section{核心组件设计}
-\section{数据库表设计}
+首先，我们会展示最简单的方法：直接使用overleaf进行编写。然后，我们整理了不同环境下\LaTeX 环境的配置指南与不同写作工具的配置技巧，方便各位同学使用本\LaTeX 模板。最后，我们说明了如何开始编写自己的毕业论文（设计）。
 
 
 \section{使用Overleaf编写毕设}
