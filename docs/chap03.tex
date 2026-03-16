@@ -70,6 +70,14 @@
 
 \subsection{文档解析与向量化组件}
 文档管理与处理组件（如图3.5所示）是本系统的核心数据工厂，负责文档从原始状态到高维向量的生命周期管理。该组件通过解耦上传、解析、分块与向量化四个阶段，构建了高性能的知识入库流水线。
+
+采用 Redis BitSet 维护分片上传状态位图。前端（基于 React Dropzone 或 Fine Uploader）将大文件切分为分片，上传前通过 MD5 算法生成全局唯一标识。后端通过对比 Redis 状态位，实现断点识别。
+
+后端接入 MinIO 对象存储系统。在确认所有分片完整性及顺序后，调用其 composeObject API 执行原子合并。相较于传统文件流合并，该方案具备更强的操作原子性与回滚能力，合并完成后自动执行碎片清理，释放系统空间。
+
+系统集成 Apache Tika 作为通用解析网关，针对非结构化数据，系统在解析过程中执行语义分块，按照预设长度对文本进行重构，为后续向量检索提供颗粒度适中的信息单元。
+
+为解决文档解析（CPU 密集型）与大模型向量化（I/O 与 API 限制型）之间的性能极差，系统引入 Apache Kafka 实现了全链路的异步化解耦。解析完成的文档分块被发布到 Kafka 主题，Kafka 作为高性能消息总线，承担了流量削峰填谷的作用。通过消息有序性配置，确保同一文档的不同分块任务按顺序处理，并支持失败后的自动重试与任务状态实时监控。向量化服务作为消费者异步订阅并处理这些分块，最终将生成的向量持久化至 Elasticsearch 向量数据库中。
 \begin{figure}[h]
 	\centering
 	\includegraphics[width=1.0\textwidth]{image/chap03/text.png}
@@ -77,122 +85,81 @@
 	\label{fig:image-embedding-text}
 \end{figure}
 \subsection{智能检索与安全过滤组件}
+
+为确保检索结果的精确度并兼顾企业级数据安全，本研究设计了一套集成身份感知与双路重排的混合检索体系（如图 3.6 所示）。
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=1.0\textwidth]{image/chap03/retrive.png}
+	\caption{智能检索与安全过滤序列图}
+	\label{fig:image-embedding-text}
+\end{figure}
+
+系统在检索入口处引入了基于 JWT 的身份拦截机制，实时提取查询主体的主组织标签与所属组织标签。然后将用户的查询向量化，并执行语义匹配。关于语义匹配本系统采用 k-NN 算法执行初步的语义海选。所有的向量检索请求在触达索引分片前，必须穿过一个前置权限过滤闸门。该闸门将组织标签作为强制性谓词注入检索算子，只有权限声明范围内的文档向量才被允许参与余弦相似度计算，未授权文档在检索初级阶段即被剔除。语义匹配的度量准则采用余弦相似度（Cosine Similarity），其数学定义如下：
+
+$$Similarity(V_q, V_d) = \frac{\sum_{i=1}^{n} q_i d_i}{\sqrt{\sum_{i=1}^{n} q_i^2} \cdot \sqrt{\sum_{i=1}^{n} d_i^2}}$$
+其中，$V_q$ 与 $V_d$ 分别代表查询向量与文档分块向量。通过 k-NN 搜索，系统可从海量异构分块中快速召回语义关联度最高的候选集。
+
+针对第一阶段召回的候选文档集，系统启动第二阶段的关键词筛选和重排序（Rescore）。该阶段旨在弥补向量检索在专业术语及缩略词匹配上的“意图偏移”缺陷，保证最终结果的聚焦性。系统采用 BM25 算法 对候选文档的文本分量进行词频相关性评估，其计算公式为：$$Score(D, Q) = \sum_{q_i \in Q} IDF(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot (1 - b + b \cdot \frac{|D|}{avgdl})}$$通过该算法，系统能够精确捕获用户查询中的高价值关键词，确保检索结果在语义相近的前提下，关键术语的命中率达到最优。
+
+为综合评价文档的最终价值，系统引入了线性加权融合排序模型。该模型通过对语义分与关键词分进行标准化加权求和，生成最终的排序度量（Final Score）：$$Final\_Score = \alpha \cdot Score_{bm25} + \beta \cdot Score_{cosine}$$式中，$\alpha$ 和 $\beta$ 为权值系数。基于实验评估与 RAG 应用对知识准确性的严谨要求，本研究采用了“侧重文字精确匹配，兼顾语义联想”的参数策略，设定 $\alpha = 1.0$，$\beta = 0.2$。这种非均衡权重分配方案确保了检索结果在专业语境下的严谨性，同时利用语义分作为排序微调因子，在关键词命中程度相近时，优先推荐语义逻辑更契合用户意图的内容。
+
+
 \subsection{提示词编排与生成决策组件}
+提示词编排与生成决策组件负责将用户意图、实时检索的外部知识以及历史对话上下文进行结构化重组，其流程如图 3.7 所示。通过构建标准化的 Prompt 模板 与动态的上下文装配逻辑，该组件将非结构化的知识片段转化为大语言模型可理解的指令集，从而引导模型产生高事实相关度、低幻觉概率的回答。
+
+\begin{figure}[h]
+	\centering
+	\includegraphics[width=1.0\textwidth]{image/chap03/generate.png}
+	\caption{生成决策序列图}
+	\label{fig:image-embedding-text}
+\end{figure}
+
+\subsubsection{提示词模板结构设计}
+系统采用分层提示词结构，将 Prompt 划分为四个核心功能区块：
+
+\begin{table}[!htbp]
+	\centering
+	\caption{提示词模板结构化构成表}
+	\label{tab:prompt-structure}
+	\begin{tabular}{|p{4cm}|p{9cm}|}
+	\hline
+	\multicolumn{1}{|c|}{\textbf{组成模块}} & \multicolumn{1}{c|}{\textbf{核心描述与功能}} \\ \hline
+	系统指令 & 定义模型角色及全局准则，包含语气设定与业务合规性硬约束。 \\ \hline
+	外部知识上下文 & 被包裹在特定定界符内，包含经混合检索召回并截断处理的知识片段。 \\ \hline
+	历史对话记录 & 提取 Redis 中存储的最近 $N$ 条（$N \le 20$）对话记录以维持连贯性。 \\ \hline
+	用户即时查询 & 经过预处理的用户本轮原始提问，作为指令的任务核心。 \\ \hline
+	\end{tabular}
+\end{table}
+
+\subsubsection{动态编排与上下文压缩}
+为解决 LLM 长度限制与推理成本问题，本组件设计了启发式上下文编排算法。使用定界符 <<REF>> 与 <<END>> 构建“语义栅栏”，使模型能够精准区分“外部参考资料”与“自身参数知识”，防止指令篡改。为平衡 Token 成本与信息密度，单段知识片段字数限制在 300 字以内，并根据剩余上下文窗口自动调整历史对话的装载深度。当检索结果为空时，自动注入“（本轮无检索结果）”占位符，强制模型在无证据时不进行臆造。
+
+\subsection{生成决策参数配置}
+
+为确保大语言模型在处理知识库问答时能够输出准确、合规且具备溯源性的内容，系统对生成过程中的核心参数进行了精细化配置。这些参数不仅控制了模型的生成多样性，还通过结构化约束降低了模型产生幻觉或被指令注入攻击的风险。
+生成决策由采样参数矩阵 $P = \{T, P_k, M\}$ 控制。
+其中
+\begin{enumerate}
+	\item 温度系数 ($T$)：针对事实问答场景，设定 $T \in [0.2, 0.3]$ 以压制随机性；针对创意场景设定 $T > 0.7$。
+	\item 核采样 ($P_k$)：常设为 0.8–0.95，配合温度系数确保输出的稳定性。
+	\item 最大令牌数 ($M$)：限制单次生成长度，防止长尾输出浪费 Token。
+\end{enumerate}
+
+
 \section{数据库表设计}
+\subsection{概念结构设计}
+\subsubsection{用户与组织实体模块}
+用户实体是系统的行为主体，组织标签实体则定义了知识隔离的边界。用户与组织标签的关系设计为多对多，允许用户同时隶属于多个组织标签，从而支持复杂企业架构下的灵活权限配置。组织标签之间的层级关系设计为树形结构，支持子标签自动继承父标签权限的垂直隔离策略。
 
-
-\section{使用Overleaf编写毕设}
-
-Overleaf\footnote{网址可见\url{https://www.overleaf.com/}}是一个在线的Latex文档协作平台。我们不需要配置任何环境，便能够在上面直接使用本模板进行写作。操作步骤如下：
-
-第一步，下载本项目压缩包（从\url{https://github.com/SYSU-SCC/sysu-thesis/releases}处下载即可），注意需要下载zip格式的压缩包。
-然后，我们在Overleaf上新建项目，并上传该压缩包，可参考\autoref{fig:overleaf-new-proj}。
-
-
+用户与组织实体模块的 E-R 图如图 3.8 所示：
 \begin{figure}[h]
 	\centering
-	\includegraphics[width=0.2\textwidth]{image/chap03/overleaf-create-proj.jpg}
-	\includegraphics[width=0.7\textwidth]{image/chap03/overleaf-upload-proj.jpg}
-	\caption{在Overleaf上创建并上传压缩包。}
-	\label{fig:overleaf-new-proj}
+	\includegraphics[width=1.0\textwidth]{image/chap03/generate.png}
+	\caption{生成决策序列图}
+	\label{fig:image-embedding-text}
 \end{figure}
 
-第二步，在Overleaf的菜单中调整编译工具为\texttt{xelatex}，可参考\autoref{fig:overleaf-config}。
-
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=0.6\textwidth]{image/chap03/overleaf-config.jpg}
-	\caption{在Overleaf上调整编译工具}
-	\label{fig:overleaf-config}
-\end{figure}
-
-
-第三步，点击编译，得到本pdf，可以开始修改pdf了！最终可见\autoref{fig:overleaf-example}。
-
-
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=0.9\textwidth]{image/chap03/overleaf-example.jpg}
-	\caption{Overleaf使用例子}
-	\label{fig:overleaf-example}
-\end{figure}
-
-
-
-\section{编译环境配置}
-
-编译环境配置相对来说比较简单，下载Tex Live2020并如同一般的程序一样安装即可。
-
-\subsection{编译环境配置：Window篇}
-
-在\url{https://mirrors.tuna.tsinghua.edu.cn/CTAN/systems/texlive/Images/}上下载Tex Live2020并参考教程\footnote{可以参考\url{https://zhuanlan.zhihu.com/p/58811994}}安装即可。
-
-\subsection{编译环境配置：Linux篇}
-
-在\url{https://mirrors.tuna.tsinghua.edu.cn/CTAN/systems/texlive/Images/}上下载Tex Live2020并参考教程\footnote{可以参考\url{https://zhuanlan.zhihu.com/p/55894177}}安装即可。
-
-
-\subsection{编译环境配置：MacOS篇}
-
-在MacOS上配置Latex的环境，这里我们使用的是MacTex。
-
-\begin{enumerate}
-	\item \url{https://www.tug.org/mactex/}下载MacTex安装。
-	\item 安装步骤：不详细展开，按照图形界面点击即可, 傻瓜式安装。
-\end{enumerate}
-
-TIPS：MacTex文件比较大，有2G多，介意的话可以选择MacTex\_Basic包，只有100M以内，但是如果安装MacTex\_Basic，后期可能会遇到各种缺包的问题。
-
-
-安装完成之后，可以简单测试一下安装是否成功。如可以查看Texshop应用是否安装好，或者在命令行测试一下\texttt{xelatex}命令是否可用。
-
-\section{写作环境配置}
-
-不同的写作工具对应不同的写作环境。这里我们给出几个工具的配置例子以供参考。
-
-\subsection{模板编译流程}
-
-由于\LaTeX 的限制，本模板需要经过四次编译才能生成完整的论文：
-
-\begin{enumerate}
-	\item 先使用xelatex编译一次
-	\item 再使用bibtex编译一次
-	\item 然后使用xelatex编译两次
-\end{enumerate}
-
-本编译流程已经写在Makefile中，修改模板源码后只需要执行\texttt{make main}即可按照该流程进行编译并生成最终的pdf。
-
-
-
-\subsection{写作环境配置：Visual Studio Code}
-
-Visual Studio Code是微软公司推出的轻量代码编辑器，我们可以做一些简单的配置，便可以用该编辑器修改我们的\LaTeX 模板，并实现一键编译。
-
-\begin{enumerate}
-	\item 安装 Visual Studio Code。
-	\item 安装 LaTeX Workshop 插件。
-\end{enumerate}
-
-本项目的\texttt{.vscode/setting.json}下已经包含了与前面所述编译流程相同的配置。正常配置下，每次修改模板源码后按下保存（Ctrl+S），就能够自动进行编译产生pdf。效果图如\autoref{fig:vscode-example}所示。
-
-
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=\linewidth]{image/chap03/vscode-example.png}
-	\caption{vscode配置好后的样例}
-	\label{fig:vscode-example}
-\end{figure}
-
-
-\section{如何开始写毕业论文（设计）}
-
-首先将所有个人信息，包括学号、姓名、专业、论文题目等，在\texttt{./docs/info.tex}中逐项进行更新。
-
-然后我们再编辑\texttt{./docs/abstract.tex}补充论文摘要。
-
-到了论文主体部分，我们可以自行编辑\texttt{./docs/chap01.tex}，\texttt{./docs/chap02.tex}等文件进行编辑。如果章数不够，可以自行修改\texttt{main.tex}增加新的章节。
-
-当论文主体编写完成后，我们再编辑\texttt{./docs/ack.tex}作为论文致谢。
-
-
-% 首先将个人信息写到\texttt{./docs/info.tex}中。
+\subsubsection{文件上传与分片存储模块}
+\subsubsection{文档解析与向量分块模块}
+\subsubsection{系统全局 E-R 图}
+\subsection{关系模式设计}
