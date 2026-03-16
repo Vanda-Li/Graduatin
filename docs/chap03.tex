@@ -148,18 +148,130 @@ $$Similarity(V_q, V_d) = \frac{\sum_{i=1}^{n} q_i d_i}{\sqrt{\sum_{i=1}^{n} q_i^
 
 \section{数据库表设计}
 \subsection{概念结构设计}
-\subsubsection{用户与组织实体模块}
-用户实体是系统的行为主体，组织标签实体则定义了知识隔离的边界。用户与组织标签的关系设计为多对多，允许用户同时隶属于多个组织标签，从而支持复杂企业架构下的灵活权限配置。组织标签之间的层级关系设计为树形结构，支持子标签自动继承父标签权限的垂直隔离策略。
 
-用户与组织实体模块的 E-R 图如图 3.8 所示：
+用户实体是系统的行为主体，组织标签实体则定义了知识隔离的边界。用户与组织标签的关系设计为多对多，允许用户同时隶属于多个组织标签，从而支持复杂企业架构下的灵活权限配置。组织标签之间的层级关系设计为树形结构，支持子标签自动继承父标签权限的垂直隔离策略。
+一个文件由多个分片组成（一对多关系），通过 \texttt{file\_md5} 进行逻辑关联。文件实体通过解析算子转化为多个带有语义特征的向量块，两者表现为一对多的映射逻辑。
+
+本系统的核心数据模型ER图设计如图 3.8 所示：
+
 \begin{figure}[h]
 	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/generate.png}
-	\caption{生成决策序列图}
+	\includegraphics[width=1.0\textwidth]{image/chap03/ER.png}
+	\caption{核心数据模型ER图}
 	\label{fig:image-embedding-text}
 \end{figure}
 
-\subsubsection{文件上传与分片存储模块}
-\subsubsection{文档解析与向量分块模块}
-\subsubsection{系统全局 E-R 图}
 \subsection{关系模式设计}
+在逻辑结构设计阶段，将概念模型转化为特定数据库管理系统下的物理存储结构。本系统采用 MySQL 作为底层存储引擎，通过合理的字段选型与约束设置，确保数据的完整性与检索效率。设计出来各 个 表 的 基本 结 构 如 下 。
+\subsubsection{用户表}
+用户表如表 \ref{tab:users-table} 所示。
+
+\begin{table}[!htbp]
+\centering
+\caption{用户表 (users) 逻辑结构设计}
+\resizebox{\textwidth}{!}{ 
+\begin{tabular}{cccccc}
+\toprule
+字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
+\midrule
+id & 用户唯一标识 & BIGINT & 20 & 否 & 是 \\
+username & 用户名(唯一) & VARCHAR & 255 & 否 & 否 \\
+password & 加密后的密码 & VARCHAR & 255 & 否 & 否 \\
+role & 用户角色 & ENUM & - & 否 & 否 \\
+org\_tags & 所属组织标签集合 & VARCHAR & 255 & 是 & 否 \\
+primary\_org & 用户主组织标签 & VARCHAR & 50 & 是 & 否 \\
+created\_at & 创建时间 & TIMESTAMP & - & 否 & 否 \\
+updated\_at & 更新时间 & TIMESTAMP & - & 否 & 否 \\
+\bottomrule
+\end{tabular}}
+\label{tab:users-table}
+\end{table}
+
+\subsubsection{组织标签表}
+组织标签表如表 \ref{tab:org-tags-table} 所示。
+
+\begin{table}[!htbp]
+\centering
+\caption{组织标签表 (organization\_tags) 逻辑结构设计}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cccccc}
+\toprule
+字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
+\midrule
+tag\_id & 标签唯一标识 & VARCHAR & 50 & 否 & 是 \\
+name & 标签名称 & VARCHAR & 100 & 否 & 否 \\
+description & 描述信息 & TEXT & - & 是 & 否 \\
+parent\_tag & 父标签ID(外键) & VARCHAR & 50 & 是 & 否 \\
+created\_by & 创建者ID(外键) & BIGINT & 20 & 否 & 否 \\
+created\_at & 创建时间 & TIMESTAMP & - & 否 & 否 \\
+updated\_at & 更新时间 & TIMESTAMP & - & 否 & 否 \\
+\bottomrule
+\end{tabular}}
+\label{tab:org-tags-table}
+\end{table}
+
+\subsubsection{文件表}
+文件表如表 \ref{tab:file-upload-table} 所示。
+
+\begin{table}[!htbp]
+\centering
+\caption{文件主表 (file\_upload) 逻辑结构设计}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cccccc}
+\toprule
+字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
+\midrule
+id & 主键自增ID & BIGINT & 20 & 否 & 是 \\
+file\_md5 & 文件指纹(唯一) & CHAR & 32 & 否 & 否 \\
+file\_name & 文件名称 & VARCHAR & 255 & 否 & 否 \\
+total\_size & 文件大小(字节) & BIGINT & 20 & 否 & 否 \\
+status & 文件处理状态 & TINYINT & 1 & 否 & 否 \\
+user\_id & 用户标识(外键) & VARCHAR & 64 & 否 & 否 \\
+created\_at & 创建时间 & DATETIME & - & 否 & 否 \\
+merged\_at & 合并完成时间 & TIMESTAMP & - & 是 & 否 \\
+\bottomrule
+\end{tabular}}
+\label{tab:file-upload-table}
+\end{table}
+
+\subsubsection{分片表}
+分片表如表 \ref{tab:chunk-info-table} 所示。
+
+\begin{table}[!htbp]
+\centering
+\caption{分片记录表 (chunk\_info) 逻辑结构设计}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cccccc}
+\toprule
+字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
+\midrule
+id & 分片唯一标识 & BIGINT & 20 & 否 & 是 \\
+file\_md5 & 关联文件指纹(外键) & CHAR & 32 & 否 & 否 \\
+chunk\_index & 分片索引(0开始) & INT & 11 & 否 & 否 \\
+chunk\_md5 & 分片校验和 & CHAR & 32 & 否 & 否 \\
+storage\_path & MinIO存储路径 & VARCHAR & 255 & 否 & 否 \\
+\bottomrule
+\end{tabular}}
+\label{tab:chunk-info-table}
+\end{table}
+
+\subsubsection{向量数据表}
+向量数据表如表 \ref{tab:document-vectors-table} 所示。
+
+\begin{table}[!htbp]
+\centering
+\caption{向量数据表 (document\_vectors) 逻辑结构设计}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{cccccc}
+\toprule
+字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
+\midrule
+vector\_id & 向量唯一标识 & BIGINT & 20 & 否 & 是 \\
+file\_md5 & 关联文件指纹(外键) & CHAR & 32 & 否 & 否 \\
+chunk\_id & 文本分块序号 & INT & 11 & 否 & 否 \\
+text\_content & 原始文本内容 & LONGTEXT & - & 是 & 否 \\
+model\_version & 向量模型版本 & VARCHAR & 32 & 是 & 否 \\
+\bottomrule
+\end{tabular}}
+\label{tab:document-vectors-table}
+\end{table}
