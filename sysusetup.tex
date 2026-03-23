@@ -50,6 +50,10 @@
 % 跨页表格
 \usepackage{longtable}
 
+% 控制图表浮动位置
+\usepackage{float}
+\usepackage[section]{placeins}
+
 % 算法
 \usepackage[ruled,linesnumbered]{algorithm2e}
 %\renewcommand{\thealgocf}{\arabic{chapter}-\arabic{algocf}}% 将算法标题由x.x改为x-x，慎用
@@ -72,6 +76,31 @@
 
 % 配置图片的默认目录
 % \graphicspath{{image/}}
+
+% 调整页眉高度，避免模板在当前字号下产生 fancyhdr 警告
+\setlength{\headheight}{12.1pt}
+
+% 减少由窄列与长标识符引起的排版伸缩提示
+\setlength{\emergencystretch}{2em}
+\hbadness=10000
+\hfuzz=5pt
+
+% 表格列类型
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+% 双语图表标题语言
+\def\captionmainlanguage{chinese}
+
+% 代码注释统一使用等宽字体，避免中文注释触发缺失斜体字体
+\lstset{
+  columns=fullflexible,
+  keepspaces=true,
+  commentstyle=\ttfamily\color{black!65}
+}
+
+% 提高输出 PDF 次版本，避免插入较新版本 PDF 资源时产生提示
+\AtBeginDocument{\special{pdf:minorversion 6}}
 
 % 数学命令
 \makeatletter

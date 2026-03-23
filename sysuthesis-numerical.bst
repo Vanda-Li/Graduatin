@@ -2326,15 +2326,10 @@ FUNCTION {presort}
   show.url show.doi check.electronic
   #0 'is.pure.electronic :=
   calc.label
-  label sortify
-  "    "
-  *
   seq.num #1 + 'seq.num :=
   seq.num  int.to.fix
   'sort.label :=
-  sort.label *
-  #1 entry.max$ substring$
-  'sort.key$ :=
+  sort.label 'sort.key$ :=
 }
 
 STRINGS { longest.label last.label next.extra last.extra.label }

@@ -1,277 +1,208 @@
 \chapter{系统设计}
+\label{cha:design}
 
-\section{系统架构设计}
-本系统采用经典的 MVC（Model-View-Controller） 模式作为核心架构框架，并结合 RAG 架构范式 进行了针对性优化。业务架构从上至下划分为用户表现层、业务服务层和持久化数据层，实现了表现逻辑、业务调度与数据存储的深度解耦。
+\section{设计目标与总体思路}
+\label{sec:design_goal}
 
-如图 3.1 所示，本系统业务架构以 AI/LLM Core 为核心驱动力，通过四个功能维度协同工作：
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=0.8\textwidth]{image/chap03/structure.png}
-	\caption{系统业务架构图}
-	\label{fig:overleaf-new-proj}
-\end{figure}
+系统设计需要同时满足三类目标：一是保证企业私有知识在检索与问答过程中受到权限约束；二是保证文档从上传到知识可检索之间的处理链路清晰、可恢复、可扩展；三是保证最终用户能够以较低学习成本完成上传、检索和对话操作。
 
-表现层作为人机交互的入口，遵循“系统状态可见性”与“流式反馈”的设计原则。负责渲染多轮对话界面、文档管理控制台以及权限配置看板。
+围绕上述目标，本文采用前后端分离、分层解耦和异步处理相结合的设计思路，将系统划分为表现层、接口与安全层、业务服务层以及数据与外部依赖层。该分层并非形式化拆分，而是为了在权限控制、长链路任务处理和交互响应之间建立清晰的职责边界。
 
-业务服务层作为系统的核心引擎，采用模块化设计，划分为用户管理、文档处理、问题处理等功能模块。每个模块内部通过清晰的接口定义与数据契约实现高内聚、低耦合，支持独立开发与测试。
-
-数据层负责系统中所有结构化与非结构化资产的存储与检索支撑。其中，关系型数据库（如MySQL）用于存储用户账户信息、权限配置与文档元数据；向量数据库（如Pinecone）则专门用于存储文档的语义向量表示，以支持高效的语义检索。文件存储存储文档原件，确保数据的完整性与可追溯性。
-\section{技术架构选择}
-技术架构遵循系统架构设计，采用分层架构模式，分为前端展示层、API 与安全层、业务逻辑层、数据访问层和数据存储层，同时集成了外部依赖服务。技术架构设计如图 3.2 所示：
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/teche.png}
-	\caption{技术架构图}
-	\label{fig:overleaf-new-proj}
-\end{figure}
-\subsection{前端展示层}
-本系统前端采用响应式设计与多端适配策略，通过媒体查询与弹性布局架构，确保了系统在移动端与个人计算机端的跨平台一致性体验。相比于开发独立的移动端 App，采用响应式多端适配策略能够大幅降低代码维护成本，并在不损失核心 RAG 交互功能的前提下，实现企业移动办公场景与深度桌面办公场景的无缝切换。
-\subsection{API与安全层}
-系统是前后端完全分离的架构模式，通过标准化的通信协议实现表现层与业务层的交互。 
+在设计过程中，本文遵循几项彼此关联的原则，以保证架构描述、实现代码与系统边界保持一致。
 \begin{enumerate}
-	\item 本系统采用Restful API设计原则，相比于 SOAP 等传统协议，RESTful 架构具备更好的轻量化特性与无状态性（Stateless），能够有效降低服务器端开销，并显著提升接口在不同编程语言间的可维护性与互操作性。
-	\item 本系统采用Spring WebSocket实现流式通信，WebSocket 建立的长连接支持全双工通信，能以极低的延迟将大模型生成的 Token 实时推送至前端，确保了对话过程的连贯性。。
-	\item 本系统使用 JWT 技术，通过在客户端存储加密 Token，实现了无状态鉴权，不仅减轻了服务器负担，且天然支持跨域访问（CORS），增强了系统在云原生环境下的伸缩性
-	\item 本系统利用spring security声明式安全特性，将用户认证与组织标签鉴权逻辑进行深度集成，确保了每个 API 接口的访问均受到严格的 RBAC（基于角色的访问控制）保护，从根本上防止了接口级别的越权攻击。
-\end{enumerate}
-\subsection{业务逻辑层}
-本系统后端基于 Spring Boot 框架构建，采用微服务化解耦思想将业务逻辑划分为用户管理、文档上传与处理、知识库检索及对话交互四个核心模块。
-\subsubsection{用户管理模块}
-本模块采用 Spring Security 构建安全核心，利用其高度可定制的过滤器链实现基于角色访问控制。区别于传统的单一权限模型，本系统在 Spring Security 的权限基础上，扩展了基于 JWT Claims 的组织标签机制，此方案通过解析 JWT 载荷中的标签，在服务层执行非侵入式的多租户数据过滤，显著降低了越权访问的风险。
-\subsubsection{文档上传与处理模块}
-文档处理模块通过分治策略与异步架构确保海量异构文档的入库效率。通过前端切片与后端 MinIO composeObject 接口。相较于传统的文件流写入，MinIO 的原子合并能力保障了分布式环境下文件合并的强一致性。引入 Redis BitSet 存储分片索引，维护文件断点续传状态。同时RAG 系统中，文档解析与向量化属于典型的计算密集型任务。通过 Kafka 缓冲请求，可实现流量削峰填谷，并通过消费者组水平扩展解析节点，确保系统具备高吞吐能力。
-\subsubsection{知识库检索模块}
-本模块采用混合检索策略，系统集成 Elasticsearch 的稠密向量检索与基于 IK 分词器的全文倒排索引检索（BM25）。相比于单一的稠密向量检索，混合检索能够在保证语义匹配的同时，兼顾关键词匹配的精确性，显著提升了检索结果的相关性与覆盖率\cite{Sawarkar_2024}。同时利用 Redis 缓存高频检索路径，可以有效缓解向量检索对 CPU 的重复计算压力，显著降低系统的平均检索耗时。
-\subsubsection{对话交互模块}
-前端会话采用 WebSocket 实现全双工通信，支撑流式生成。在此基础上，系统在多轮对话中，通过 Redis 维护对话历史与上下文状态，确保了用户提问的语义连贯性。整体前端采用Vue 3 + TypeScript 构建，利用其组件化与响应式特性，实现了对话界面、文档管理控制台与权限配置看板的高效开发与维护。通过Axios库与后端 RESTful API 进行数据交互，确保了前后端的高效通信与数据一致性。
-
-\subsection{数据访问层}
-通过 Spring Data JPA 结合 Hibernate ORM 框架实现数据访问层设计，采用 Repository 模式封装底层数据操作，通过抽象接口屏蔽具体的 SQL 编写细节。Hibernate 提供的二级缓存机制与延迟加载特性，可以有效减少数据库 I/O 次数
-\subsection{数据存储层}
-数据存储层适应前述要求，采用MinIO文档存储，MySQL数据库，Elasticsearch 向量数据库和Redis缓存数据库四种不同类型的数据库系统，分别满足文档原件存储、结构化数据存储、向量化存储与高频访问数据的快速读写需求。MySQL相比于 PostgreSQL 在高并发读取场景下具备更成熟的索引优化与较低的运维复杂度。MinIO 相比于传统的本地文件系统存储，兼容 S3 协议，具备更好的水平扩展性与冗余纠错能力。Elasticsearch 提供的 HNSW 索引算法 能够实现亚秒级的稠密向量检索，同时利用倒排索引保障了专业术语检索的召回率,维护成本也比 Milvus 等专门的向量数据库更低。Redis 作为内存数据库，提供了极高的读写性能，是当前工业界主流的高性能缓存数据库。
-
-\section{核心组件设计}
-\subsection{安全鉴权与多租户管理组件}
-为实现复杂企业环境下的细粒度访问控制，系统构建了如图 3.3 所示的权限映射引擎。通过权限映射关系，系统实现了从“身份空间”到“数据空间”的精准对齐。管理员角色通过“全域通行规则”实现对私有、组织及公共文档的完全覆盖。针对普通用户，系统建立“主标签一致性映射”，确保个体仅能访问其私有域资源。根据企业复杂的组织架构，设计组织标签向下兼容映射，即子标签自动继承父标签的访问权限。
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=0.7\textwidth]{image/chap03/org.png}
-	\caption{权限映射图}
-	\label{fig:image-embedding-text}
-\end{figure}
-
-定义了权限映射逻辑后，系统据此设计了如图 3.4 所示的实时访问决策流程。系统首先执行角色判定，若非管理员，则进入核心访问控制判定模块。该模块依次对文档的公共属性、所有权属性及组织属性进行级联校验。在组织属性判定中，系统不仅检查标签归属，还通过比较用户所在组织标签层级与文档组织标签层级的大小关系，严格执行子级可见上级的垂直隔离策略。
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/acc.png}
-	\caption{访问决策流程图}
-	\label{fig:image-embedding-text}
-\end{figure}
-
-\subsection{文档解析与向量化组件}
-文档管理与处理组件（如图3.5所示）是本系统的核心数据工厂，负责文档从原始状态到高维向量的生命周期管理。该组件通过解耦上传、解析、分块与向量化四个阶段，构建了高性能的知识入库流水线。
-
-采用 Redis BitSet 维护分片上传状态位图。前端（基于 React Dropzone 或 Fine Uploader）将大文件切分为分片，上传前通过 MD5 算法生成全局唯一标识。后端通过对比 Redis 状态位，实现断点识别。
-
-后端接入 MinIO 对象存储系统。在确认所有分片完整性及顺序后，调用其 composeObject API 执行原子合并。相较于传统文件流合并，该方案具备更强的操作原子性与回滚能力，合并完成后自动执行碎片清理，释放系统空间。
-
-系统集成 Apache Tika 作为通用解析网关，针对非结构化数据，系统在解析过程中执行语义分块，按照预设长度对文本进行重构，为后续向量检索提供颗粒度适中的信息单元。
-
-为解决文档解析（CPU 密集型）与大模型向量化（I/O 与 API 限制型）之间的性能极差，系统引入 Apache Kafka 实现了全链路的异步化解耦。解析完成的文档分块被发布到 Kafka 主题，Kafka 作为高性能消息总线，承担了流量削峰填谷的作用。通过消息有序性配置，确保同一文档的不同分块任务按顺序处理，并支持失败后的自动重试与任务状态实时监控。向量化服务作为消费者异步订阅并处理这些分块，最终将生成的向量持久化至 Elasticsearch 向量数据库中。
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/text.png}
-	\caption{文档解析与向量化异步流水线图}
-	\label{fig:image-embedding-text}
-\end{figure}
-\subsection{智能检索与安全过滤组件}
-
-为确保检索结果的精确度并兼顾企业级数据安全，本研究设计了一套集成身份感知与双路重排的混合检索体系（如图 3.6 所示）。
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/retrive.png}
-	\caption{智能检索与安全过滤序列图}
-	\label{fig:image-embedding-text}
-\end{figure}
-
-系统在检索入口处引入了基于 JWT 的身份拦截机制，实时提取查询主体的主组织标签与所属组织标签。然后将用户的查询向量化，并执行语义匹配。关于语义匹配本系统采用 k-NN 算法执行初步的语义海选。所有的向量检索请求在触达索引分片前，必须穿过一个前置权限过滤闸门。该闸门将组织标签作为强制性谓词注入检索算子，只有权限声明范围内的文档向量才被允许参与余弦相似度计算，未授权文档在检索初级阶段即被剔除。语义匹配的度量准则采用余弦相似度（Cosine Similarity），其数学定义如下：
-
-$$Similarity(V_q, V_d) = \frac{\sum_{i=1}^{n} q_i d_i}{\sqrt{\sum_{i=1}^{n} q_i^2} \cdot \sqrt{\sum_{i=1}^{n} d_i^2}}$$
-其中，$V_q$ 与 $V_d$ 分别代表查询向量与文档分块向量。通过 k-NN 搜索，系统可从海量异构分块中快速召回语义关联度最高的候选集。
-
-针对第一阶段召回的候选文档集，系统启动第二阶段的关键词筛选和重排序（Rescore）。该阶段旨在弥补向量检索在专业术语及缩略词匹配上的“意图偏移”缺陷，保证最终结果的聚焦性。系统采用 BM25 算法 对候选文档的文本分量进行词频相关性评估，其计算公式为：$$Score(D, Q) = \sum_{q_i \in Q} IDF(q_i) \cdot \frac{f(q_i, D) \cdot (k_1 + 1)}{f(q_i, D) + k_1 \cdot (1 - b + b \cdot \frac{|D|}{avgdl})}$$通过该算法，系统能够精确捕获用户查询中的高价值关键词，确保检索结果在语义相近的前提下，关键术语的命中率达到最优。
-
-为综合评价文档的最终价值，系统引入了线性加权融合排序模型。该模型通过对语义分与关键词分进行标准化加权求和，生成最终的排序度量（Final Score）：$$Final\_Score = \alpha \cdot Score_{bm25} + \beta \cdot Score_{cosine}$$式中，$\alpha$ 和 $\beta$ 为权值系数。基于实验评估与 RAG 应用对知识准确性的严谨要求，本研究采用了“侧重文字精确匹配，兼顾语义联想”的参数策略，设定 $\alpha = 1.0$，$\beta = 0.2$。这种非均衡权重分配方案确保了检索结果在专业语境下的严谨性，同时利用语义分作为排序微调因子，在关键词命中程度相近时，优先推荐语义逻辑更契合用户意图的内容。
-
-
-\subsection{提示词编排与生成决策组件}
-提示词编排与生成决策组件负责将用户意图、实时检索的外部知识以及历史对话上下文进行结构化重组，其流程如图 3.7 所示。通过构建标准化的 Prompt 模板 与动态的上下文装配逻辑，该组件将非结构化的知识片段转化为大语言模型可理解的指令集，从而引导模型产生高事实相关度、低幻觉概率的回答。
-
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/generate.png}
-	\caption{生成决策序列图}
-	\label{fig:image-embedding-text}
-\end{figure}
-
-\subsubsection{提示词模板结构设计}
-系统采用分层提示词结构，将 Prompt 划分为四个核心功能区块：
-
-\begin{table}[!htbp]
-	\centering
-	\caption{提示词模板结构化构成表}
-	\label{tab:prompt-structure}
-	\begin{tabular}{|p{4cm}|p{9cm}|}
-	\hline
-	\multicolumn{1}{|c|}{\textbf{组成模块}} & \multicolumn{1}{c|}{\textbf{核心描述与功能}} \\ \hline
-	系统指令 & 定义模型角色及全局准则，包含语气设定与业务合规性硬约束。 \\ \hline
-	外部知识上下文 & 被包裹在特定定界符内，包含经混合检索召回并截断处理的知识片段。 \\ \hline
-	历史对话记录 & 提取 Redis 中存储的最近 $N$ 条（$N \le 20$）对话记录以维持连贯性。 \\ \hline
-	用户即时查询 & 经过预处理的用户本轮原始提问，作为指令的任务核心。 \\ \hline
-	\end{tabular}
-\end{table}
-
-\subsubsection{动态编排与上下文压缩}
-为解决 LLM 长度限制与推理成本问题，本组件设计了启发式上下文编排算法。使用定界符 <<REF>> 与 <<END>> 构建“语义栅栏”，使模型能够精准区分“外部参考资料”与“自身参数知识”，防止指令篡改。为平衡 Token 成本与信息密度，单段知识片段字数限制在 300 字以内，并根据剩余上下文窗口自动调整历史对话的装载深度。当检索结果为空时，自动注入“（本轮无检索结果）”占位符，强制模型在无证据时不进行臆造。
-
-\subsection{生成决策参数配置}
-
-为确保大语言模型在处理知识库问答时能够输出准确、合规且具备溯源性的内容，系统对生成过程中的核心参数进行了精细化配置。这些参数不仅控制了模型的生成多样性，还通过结构化约束降低了模型产生幻觉或被指令注入攻击的风险。
-生成决策由采样参数矩阵 $P = \{T, P_k, M\}$ 控制。
-其中
-\begin{enumerate}
-	\item 温度系数 ($T$)：针对事实问答场景，设定 $T \in [0.2, 0.3]$ 以压制随机性；针对创意场景设定 $T > 0.7$。
-	\item 核采样 ($P_k$)：常设为 0.8–0.95，配合温度系数确保输出的稳定性。
-	\item 最大令牌数 ($M$)：限制单次生成长度，防止长尾输出浪费 Token。
+    \item 权限语义必须先于具体功能建立，使文档上传、文件列表、检索召回、下载预览和问答生成等关键路径共享同一访问边界。
+    \item 对于上传、解析、向量生成和索引写入等长链路任务，系统通过对象存储与消息队列降低耦合度，避免单个请求承担全部计算压力。
+    \item 问答场景采用流式输出，上传场景保留分片续传与进度反馈，使用户能够持续感知任务状态。
 \end{enumerate}
 
+\section{总体架构设计}
+\label{sec:overall_design}
 
-\section{数据库表设计}
-\subsection{概念结构设计}
+系统总体架构如图 \ref{fig:system-architecture} 所示。前端以知识库页面、聊天页面、组织标签页面和用户管理页面为主要入口；后端以 Spring Boot 应用为核心，负责认证授权、文档处理、检索问答和会话管理。
 
-用户实体是系统的行为主体，组织标签实体则定义了知识隔离的边界。用户与组织标签的关系设计为多对多，允许用户同时隶属于多个组织标签，从而支持复杂企业架构下的灵活权限配置。组织标签之间的层级关系设计为树形结构，支持子标签自动继承父标签权限的垂直隔离策略。
-一个文件由多个分片组成（一对多关系），通过 \texttt{file\_md5} 进行逻辑关联。文件实体通过解析算子转化为多个带有语义特征的向量块，两者表现为一对多的映射逻辑。
+数据层由 MySQL、Redis、MinIO 与 Elasticsearch 共同构成，外部能力则通过大模型接口、嵌入接口和 Kafka 消息中间件接入。多组件协同是系统设计的基本前提：关系型存储负责业务状态，对象存储负责文件实体，搜索引擎负责知识检索，消息队列负责将上传请求与计算密集型处理过程解耦。
 
-本系统的核心数据模型ER图设计如图 3.8 所示：
-
-\begin{figure}[h]
-	\centering
-	\includegraphics[width=1.0\textwidth]{image/chap03/ER.png}
-	\caption{核心数据模型ER图}
-	\label{fig:image-embedding-text}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.82\textwidth]{image/chap03/structure.png}
+    \caption{系统总体架构图}
+    \label{fig:system-architecture}
 \end{figure}
 
-\subsection{关系模式设计}
-在逻辑结构设计阶段，将概念模型转化为特定数据库管理系统下的物理存储结构。本系统采用 MySQL 作为底层存储引擎，通过合理的字段选型与约束设置，确保数据的完整性与检索效率。设计出来各 个 表 的 基本 结 构 如 下 。
-\subsubsection{用户表}
-用户表如表 \ref{tab:users-table} 所示。
+表现层由 Vue 3、TypeScript 与 Vite 组成，负责文件上传、文件列表管理、知识检索、聊天问答、用户信息展示和组织标签维护等界面交互。
 
-\begin{table}[!htbp]
-\centering
-\caption{用户表 (users) 逻辑结构设计}
-\resizebox{\textwidth}{!}{ 
-\begin{tabular}{cccccc}
-\toprule
-字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
-\midrule
-id & 用户唯一标识 & BIGINT & 20 & 否 & 是 \\
-username & 用户名(唯一) & VARCHAR & 255 & 否 & 否 \\
-password & 加密后的密码 & VARCHAR & 255 & 否 & 否 \\
-role & 用户角色 & ENUM & - & 否 & 否 \\
-org\_tags & 所属组织标签集合 & VARCHAR & 255 & 是 & 否 \\
-primary\_org & 用户主组织标签 & VARCHAR & 50 & 是 & 否 \\
-created\_at & 创建时间 & TIMESTAMP & - & 否 & 否 \\
-updated\_at & 更新时间 & TIMESTAMP & - & 否 & 否 \\
-\bottomrule
-\end{tabular}}
-\label{tab:users-table}
+接口与安全层由 RESTful API、WebSocket 通道以及 Spring Security 相关过滤器构成，主要承担请求接入、身份识别和组织授权。
+
+业务服务层围绕用户管理、文档上传、文档解析、向量化、混合检索、会话管理和文件服务展开，负责实现核心业务逻辑。
+
+数据与外部依赖层则由 MySQL、Redis、MinIO、Elasticsearch、DeepSeek 接口和 Kafka 共同组成，对应状态持久化、对象存储、知识检索、模型调用和异步解耦等职责。
+
+\subsection{技术选型}
+
+表 \ref{tab:tech-stack} 汇总了本系统的核心技术组件及其选择原因。
+
+\begin{table}[H]
+    \centering
+    \caption{核心技术选型}
+    \label{tab:tech-stack}
+    {\footnotesize
+    \begin{tabular}{L{1.8cm}L{3.0cm}L{8.0cm}}
+        \toprule
+        层次 & 技术组件 & 选择原因 \\
+        \midrule
+        前端框架 & \makecell[l]{Vue 3、\\TypeScript、Vite} & Vue 3 采用组件化开发方式，适合构建知识库、问答与管理页面等多视图交互界面；TypeScript 有助于约束前后端接口数据结构，降低维护成本；Vite 在开发阶段启动快、热更新响应及时，适合需要频繁迭代的前端工程。 \\
+        后端框架 & \makecell[l]{Spring Boot 3.4.2、\\Java 17} & Spring Boot 生态成熟，便于统一组织接口层、服务层和配置管理；Java 17 作为长期支持版本，兼顾稳定性、性能与工程可维护性，适合承载企业知识系统的核心业务逻辑。 \\
+        安全机制 & \makecell[l]{Spring Security、\\JWT} & Spring Security 提供完整的过滤器链与授权扩展能力，便于把角色和组织标签约束整合到统一认证流程中；JWT 适合前后端分离场景下的无状态认证，能够减少服务端会话管理负担。 \\
+        文件存储 & MinIO & MinIO 兼容 S3 接口，便于实现分片上传、对象合并和预签名访问；同时其私有化部署成本较低，更符合企业内部文档系统对数据可控性的要求。 \\
+        数据存储 & \makecell[l]{MySQL、Redis、\\Elasticsearch} & MySQL 适合保存用户、组织标签和文件元数据等结构化信息；Redis 读写延迟低，适合缓存上传状态和会话数据；Elasticsearch 同时支持全文检索与向量检索，适合构建权限约束下的混合检索能力。 \\
+        异步处理 & Kafka & 文件解析、切分和向量化属于耗时较长的后台任务，Kafka 能够在上传完成后将请求链路与入库链路解耦，并通过消息缓冲提高系统在高并发场景下的稳定性。 \\
+        文档处理 & Apache Tika、HanLP & Apache Tika 支持多种文档格式的统一文本提取，能够减少不同文件类型的解析差异；HanLP 对中文分词和长句切分支持较好，适合后续语义切分与检索片段构建。 \\
+        模型调用 & \makecell[l]{DeepSeek API、\\Embedding API} & 系统需要同时具备文本生成与向量表示能力，因此分别选用对话模型接口和嵌入接口；该组合便于将生成链路与检索链路分开设计，也更利于后续模型替换与能力扩展。 \\
+        \bottomrule
+    \end{tabular}
+    }
 \end{table}
 
-\subsubsection{组织标签表}
-组织标签表如表 \ref{tab:org-tags-table} 所示。
+\section{核心模块设计}
+\label{sec:core_design}
 
-\begin{table}[!htbp]
-\centering
-\caption{组织标签表 (organization\_tags) 逻辑结构设计}
-\resizebox{\textwidth}{!}{
-\begin{tabular}{cccccc}
-\toprule
-字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
-\midrule
-tag\_id & 标签唯一标识 & VARCHAR & 50 & 否 & 是 \\
-name & 标签名称 & VARCHAR & 100 & 否 & 否 \\
-description & 描述信息 & TEXT & - & 是 & 否 \\
-parent\_tag & 父标签ID(外键) & VARCHAR & 50 & 是 & 否 \\
-created\_by & 创建者ID(外键) & BIGINT & 20 & 否 & 否 \\
-created\_at & 创建时间 & TIMESTAMP & - & 否 & 否 \\
-updated\_at & 更新时间 & TIMESTAMP & - & 否 & 否 \\
-\bottomrule
-\end{tabular}}
-\label{tab:org-tags-table}
+在总体架构确定之后，选取权限控制、文档入库、混合检索和对话编排四条直接影响系统行为的主链路展开设计说明。
+
+\subsection{权限模型与多租户隔离设计}
+\label{sec:permission_design}
+
+系统的权限模型不是单纯的角色控制，而是由“角色、主组织标签、组织标签集合、文档公开性、文档归属者”共同决定。管理员可以访问和维护系统内全部资源。每个用户在注册时都会自动生成一个私人组织标签，并以此构建个人私有空间。普通用户可以访问自己上传的文档、公开文档以及组织标签匹配的共享文档。对于检索和文件列表查询，系统还需要根据组织标签层级展开用户的有效标签集合，以允许用户访问父级组织范围内的共享文档。
+
+权限映射关系如图 \ref{fig:permission-mapping} 所示。该设计的关键不在于“是否有某个角色”，而在于如何将用户身份信息映射为后续数据访问阶段可直接使用的过滤条件。角色只是权限计算的起点；真正进入检索与文件服务阶段时，起作用的是用户可见组织范围、文档归属关系与公开属性的组合结果。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.72\textwidth]{image/chap03/org.png}
+    \caption{权限映射关系图}
+    \label{fig:permission-mapping}
+\end{figure}
+
+当用户发起文件访问或检索请求时，系统按图 \ref{fig:permission-decision} 的逻辑完成权限判断。代码中资源级过滤器以快速拦截为主，检索服务和文件列表服务则结合缓存服务计算用户有效标签集合，并完成更完整的层级权限展开，两者共同构成系统的多租户隔离机制。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{image/chap03/acc.png}
+    \caption{权限判定与数据隔离流程图}
+    \label{fig:permission-decision}
+\end{figure}
+
+\subsection{文档接入与知识入库链路设计}
+\label{sec:document_pipeline_design}
+
+文档接入链路是连接“原始文件”与“知识索引”的关键桥梁。如图~\ref{fig:document-pipeline}所示，系统先在前端对待上传文件执行 MD5 计算并按固定粒度切分，再逐片提交上传请求。后端接收分片后，在 MySQL 中维护文件记录，在 Redis 中维护分片位图，并将分片对象写入 MinIO。
+
+全部分片上传完成后，服务端依据文件 MD5 对应的分片列表完成对象合并并写回文件状态。随后，控制器将文件处理任务发送至 Kafka，由消费者在后台执行文档解析与向量化。解析服务负责将文本切分结果写入关系型存储，向量化服务再将文本分块与向量写入 Elasticsearch 知识索引。由此，文件从“已上传”转化为“可检索知识”的过程被明确拆分为传输、状态确认、后台处理和索引写入四个阶段。
+
+该链路的设计重点是将“上传可靠性”和“入库吞吐量”分开考虑。文件上传阶段更关注状态恢复和数据完整性，后台解析与向量化阶段则更强调计算密集任务的异步化处理。如果将两类职责压缩进单次请求，系统会同时承担传输、解析与索引写入压力，既不利于错误恢复，也不利于后续扩展。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.98\textwidth]{image/chap03/text.png}
+    \caption{文档处理全生命周期设计图}
+    \label{fig:document-pipeline}
+\end{figure}
+
+\subsection{混合检索设计}
+\label{sec:retrieval_design}
+
+为兼顾企业文档场景中的术语匹配能力与语义泛化能力，系统采用“语义召回+文本重排+权限过滤”的混合检索设计。这里的出发点是希望在专业文档场景中同时保留语义相近性判断与术语精确定位能力。因为单一检索路径在不同任务中容易出现召回偏移，检索效果还会受到候选组织方式与后续编排方式的共同影响\cite{rahman2025comparative}。因此，企业知识场景中的检索设计不能只追求“语义上相似”，还必须考虑候选结果是否便于后续验证与生成使用。
+
+为此，系统进行两阶段混合检索设计。在第一阶段使用嵌入模型将用户问题转换为查询向量，并执行 kNN 召回；与此同时，将用户身份、公开属性和组织标签约束作为过滤条件一并注入查询，避免未授权文档进入候选集。在第二阶段，系统对候选结果执行文本匹配重排序，使包含关键术语、编号或精确表述的片段获得更高优先级。权限过滤被放置在召回阶段共同执行，而不是放到结果返回后再处理，从而保证检索执行过程中的事实一致性、结果可核对性和安全边界。
+
+混合检索与安全过滤的总体流程如图~\ref{fig:hybrid-retrieval-design}所示。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.78\textwidth]{image/chap03/retrive.png}
+    \caption{混合检索与安全过滤设计图}
+    \label{fig:hybrid-retrieval-design}
+\end{figure}
+
+\subsection{对话编排与生成设计}
+\label{sec:generation_design}
+
+问答模块以“检索结果受约束的生成”为核心。系统在会话阶段并不直接将用户问题发送给模型，而是先确定当前用户的会话状态，再决定哪些外部证据能够进入生成过程。这样的设计并不是简单把“检索”和“生成”顺序连接起来，而是把提示词组织本身视为知识治理链路的一部分。企业知识管理研究指出，提示编排不仅影响回答形式，也会影响知识在系统中的组织与调用方式\cite{oleary2024km}。因此，在企业场景下，生成阶段同样需要接受上下文边界、来源组织方式和会话连续性的共同约束。
+
+基于上述约束，系统先从 Redis 读取当前用户会话标识及历史消息，再调用混合检索服务获取带来源编号的候选知识片段。随后，系统将规则、检索结果、历史对话和本轮问题拼接为标准化提示词，最后再调用对话模型接口以流式方式逐段返回生成内容。
+
+在这一编排过程中，本轮问题及历史消息保障问答的连续性。但是回答质量也不能只看流畅性，还需要与风险控制和适用边界同时衡量\cite{liang2023holistic}，因此规则约束用于限制模型偏离检索证据或暴露敏感信息。而来源编号则用于保留可追溯的证据链，因为外部证据约束是提高回答可信度的重要条件\cite{zhang2025hallucination}，特别对于垂直领域知识问答，检索结果的可解释性和可核对性同样重要\cite{tcmstandardrag2025}。
+
+提示词编排与生成流程如图~\ref{fig:generation-design}所示。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{image/chap03/generate.png}
+    \caption{提示词编排与生成流程图}
+    \label{fig:generation-design}
+\end{figure}
+
+\section{数据结构设计}
+\label{sec:data_design}
+
+数据结构设计的作用并不只是给表和字段命名，更重要的是让权限信息、处理状态和检索结果能够在多种存储之间连续传递。考虑到系统同时使用关系型数据库、对象存储与搜索引擎，本节分别说明业务元数据和知识索引的组织方式，以及它们如何共同支撑后续实现。
+
+\subsection{关系型存储结构}
+
+系统在关系型数据库中主要维护用户、组织标签、文件上传记录、分片记录和文本分块记录。五个实体之间的关系如图 \ref{fig:er-diagram} 所示。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{image/chap03/ER.png}
+    \caption{系统 E-R 图}
+    \label{fig:er-diagram}
+\end{figure}
+
+在实体关系基础上，核心关系表的字段设计及其作用说明如表 \ref{tab:relational-objects} 所示。
+
+\begin{table}[H]
+    \centering
+    \caption{关系型核心存储对象设计}
+    \label{tab:relational-objects}
+    {\footnotesize
+    \newcommand{\relcell}[1]{\parbox[c][1.3cm][c]{\linewidth}{\raggedright\strut #1\strut}}
+    \begin{tabular}{L{2.35cm}L{4.15cm}L{6.2cm}}
+        \toprule
+        存储对象 & 关键字段 & 作用说明 \\
+        \midrule
+        \relcell{\texttt{users}} & \relcell{\texttt{id}、\texttt{username}、\texttt{role}、\texttt{org\_tags}、\texttt{primary\_org}} & \relcell{保存用户身份、角色及组织标签信息，是认证授权与界面展示的基础数据} \\
+        \relcell{{\scriptsize \texttt{organization}}\\{\scriptsize \texttt{\_tags}}} & \relcell{\texttt{tag\_id}、\texttt{name}、\texttt{parent\_tag}、\texttt{created\_by}} & \relcell{保存组织标签及其层级关系，为组织共享范围和有效标签展开提供依据} \\
+        \relcell{\texttt{file\_}\\\texttt{upload}} & \relcell{\texttt{file\_md5}、\texttt{fileName}、\texttt{user\_id}、\texttt{org\_tag}、\texttt{is\_public}、\texttt{status}} & \relcell{保存文件级元数据、归属关系与上传状态，是文件服务与权限校验的入口对象} \\
+        \relcell{\texttt{chunk\_}\\\texttt{info}} & \relcell{\texttt{fileMd5}、\texttt{chunkIndex}、\texttt{chunkMd5}、\texttt{storagePath}} & \relcell{记录上传分片信息，支撑断点续传和服务端对象合并} \\
+        \relcell{\texttt{document\_}\\\texttt{vectors}} & \relcell{\texttt{vectorId}、\texttt{fileMd5}、\texttt{chunkId}、\texttt{textContent}、\texttt{user\_id}、\texttt{org\_tag}} & \relcell{保存解析后的文本分块及其权限元数据，作为向量化写入前的中间结果} \\
+        \bottomrule
+    \end{tabular}
+    }
 \end{table}
 
-\subsubsection{文件表}
-文件表如表 \ref{tab:file-upload-table} 所示。
+\subsection{知识索引结构}
 
-\begin{table}[!htbp]
-\centering
-\caption{文件主表 (file\_upload) 逻辑结构设计}
-\resizebox{\textwidth}{!}{
-\begin{tabular}{cccccc}
-\toprule
-字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
-\midrule
-id & 主键自增ID & BIGINT & 20 & 否 & 是 \\
-file\_md5 & 文件指纹(唯一) & CHAR & 32 & 否 & 否 \\
-file\_name & 文件名称 & VARCHAR & 255 & 否 & 否 \\
-total\_size & 文件大小(字节) & BIGINT & 20 & 否 & 否 \\
-status & 文件处理状态 & TINYINT & 1 & 否 & 否 \\
-user\_id & 用户标识(外键) & VARCHAR & 64 & 否 & 否 \\
-created\_at & 创建时间 & DATETIME & - & 否 & 否 \\
-merged\_at & 合并完成时间 & TIMESTAMP & - & 是 & 否 \\
-\bottomrule
-\end{tabular}}
-\label{tab:file-upload-table}
+由于 Elasticsearch 的特性，系统将文本分块与向量结果共同写入 Elasticsearch 索引 \texttt{knowledge\_base}。该索引结构如表 \ref{tab:es-fields} 所示。
+
+\begin{table}[H]
+    \centering
+    \caption{Elasticsearch 知识索引字段设计}
+    \label{tab:es-fields}
+    {\footnotesize
+    \begin{tabularx}{\textwidth}{L{2.5cm}L{2.1cm}Y}
+        \toprule
+        字段名 & 类型 & 作用说明 \\
+        \midrule
+        \texttt{fileMd5} & \texttt{keyword} & 关联原始文件标识，用于结果回填与删除同步 \\
+        \texttt{chunkId} & \texttt{integer} & 标识文件内的分块序号 \\
+        \makecell[l]{\texttt{text}\\\texttt{Content}} & \texttt{text} & 保存可检索文本内容，并配置中文分词器用于全文匹配 \\
+        \texttt{vector} & \makecell[l]{\texttt{dense\_}\\\texttt{vector}} & 保存 2048 维嵌入向量，用于 kNN 语义检索 \\
+        \makecell[l]{\texttt{model}\\\texttt{Version}} & \texttt{keyword} & 标识生成向量所使用的模型版本 \\
+        \texttt{userId} & \texttt{keyword} & 标识上传者，用于权限过滤和结果展示 \\
+        \texttt{orgTag} & \texttt{keyword} & 标识文档所属组织标签，用于检索阶段过滤 \\
+        \texttt{isPublic} & \texttt{boolean} & 标识公开属性，用于跨用户共享资源判断 \\
+        \bottomrule
+    \end{tabularx}
+    }
 \end{table}
 
-\subsubsection{分片表}
-分片表如表 \ref{tab:chunk-info-table} 所示。
-
-\begin{table}[!htbp]
-\centering
-\caption{分片记录表 (chunk\_info) 逻辑结构设计}
-\resizebox{\textwidth}{!}{
-\begin{tabular}{cccccc}
-\toprule
-字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
-\midrule
-id & 分片唯一标识 & BIGINT & 20 & 否 & 是 \\
-file\_md5 & 关联文件指纹(外键) & CHAR & 32 & 否 & 否 \\
-chunk\_index & 分片索引(0开始) & INT & 11 & 否 & 否 \\
-chunk\_md5 & 分片校验和 & CHAR & 32 & 否 & 否 \\
-storage\_path & MinIO存储路径 & VARCHAR & 255 & 否 & 否 \\
-\bottomrule
-\end{tabular}}
-\label{tab:chunk-info-table}
-\end{table}
-
-\subsubsection{向量数据表}
-向量数据表如表 \ref{tab:document-vectors-table} 所示。
-
-\begin{table}[!htbp]
-\centering
-\caption{向量数据表 (document\_vectors) 逻辑结构设计}
-\resizebox{\textwidth}{!}{
-\begin{tabular}{cccccc}
-\toprule
-字段名 & 字段描述 & 字段类型 & 字段长度 & 允许为空 & 主键 \\
-\midrule
-vector\_id & 向量唯一标识 & BIGINT & 20 & 否 & 是 \\
-file\_md5 & 关联文件指纹(外键) & CHAR & 32 & 否 & 否 \\
-chunk\_id & 文本分块序号 & INT & 11 & 否 & 否 \\
-text\_content & 原始文本内容 & LONGTEXT & - & 是 & 否 \\
-model\_version & 向量模型版本 & VARCHAR & 32 & 是 & 否 \\
-\bottomrule
-\end{tabular}}
-\label{tab:document-vectors-table}
-\end{table}
+上述设计使系统形成了“关系型数据库负责业务元数据、对象存储负责原始文件、搜索引擎负责知识检索”的多存储协同结构，为后续实现章节中的关键代码提供了清晰的数据基础。
