@@ -1,0 +1,39 @@
+@startuml
+!include ../plantuml-theme.iuml
+left to right direction
+
+title 图 2.1 用户与组织管理用例图
+
+actor "普通用户" as User
+actor "管理员" as Admin
+Admin -|> User
+
+rectangle "用户与组织管理模块" {
+  usecase "用户注册" as UC_Register
+  usecase "用户登录" as UC_Login
+  usecase "用户登出" as UC_Logout
+  usecase "当前用户信息查询" as UC_Profile
+  usecase "切换主组织" as UC_SwitchOrg
+  usecase "私人组织标签初始化" as UC_InitPrivate
+  usecase "组织标签管理" as UC_OrgManage
+  usecase "用户管理" as UC_UserManage
+  usecase "用户访问范围配置" as UC_Scope
+}
+
+User --> UC_Register
+User --> UC_Login
+User --> UC_Logout
+User --> UC_Profile
+User --> UC_SwitchOrg
+
+Admin --> UC_OrgManage
+Admin --> UC_UserManage
+Admin --> UC_Scope
+
+UC_Register .> UC_InitPrivate : <<include>>
+
+legend bottom
+第 2 章只保留需求视角，
+不引入 RAG 对话、大模型 API 或后端服务参与者。
+endlegend
+@enduml

@@ -1,0 +1,58 @@
+@startuml
+
+title 图 4.3 文件合并实现流程图
+
+start
+:收到 /upload/merge 请求;
+:查询 file_upload 记录;
+
+if (文件记录存在?) then (是)
+else (否)
+  :拒绝合并;
+  stop
+endif
+
+:按 totalSize 计算期望分片数;
+:查询 chunk_info 记录;
+
+if (分片记录数一致?) then (是)
+else (否)
+  :返回 uploadedChunks;\n提示补传缺失分片;
+  stop
+endif
+
+:逐个 statObject 检查 MinIO 分片对象;
+if (分片对象齐全?) then (是)
+else (否)
+  :返回 uploadedChunks;\n提示补传缺失分片;
+  stop
+endif
+
+:composeObject 合并对象;
+if (合并成功?) then (是)
+else (否)
+  :标记失败并允许重试;
+  stop
+endif
+
+:删除上传标记;
+:更新 file_upload.status = MERGED;
+
+if (totalSize <= inline-size-threshold?) then (是)
+  :同步执行解析与入库;
+else (否)
+  :投递 Kafka 处理消息;
+  if (投递成功?) then (是)
+    :返回合并成功;
+  else (否)
+    :进入重试 / 死信补偿;
+  endif
+endif
+
+stop
+
+legend bottom
+这版把“同步直通”和“Kafka 异步”两条后续路径都补出来了，
+同时显式画出缺片修复和消息补偿分支。
+endlegend
+@enduml

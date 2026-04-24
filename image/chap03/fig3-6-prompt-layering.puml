@@ -1,0 +1,23 @@
+@startuml
+!include ../plantuml-theme.iuml
+top to bottom direction
+
+title Prompt 分层装配示意图
+
+rectangle "assistant_rules\n回答语言 / 输出结构 / 引用格式 / 拒答规则" as L1
+rectangle "conversation_policy\n新话题切换 / 全局回退 / 历史上限" as L2
+rectangle "memory_policy\n历史注入策略 / 工作记忆规则 / 冲突处理" as L3
+rectangle "privacy_policy\n脱敏约束 / 外送约束 / 高风险拒答" as L4
+rectangle "turn_summary\n轮次类型 / 澄清需求 / 文档范围 / 改写结果" as L5
+rectangle "memory_summary\n当前主题 / 当前主语 / 活跃文档 / 关键词 / 答案摘要" as L6
+rectangle "authorized_context\n授权检索片段 / 来源编号 / 文件标识\n或 empty-evidence placeholder" as L7
+rectangle "LLM Input" as LLM
+
+L1 --> L2
+L2 --> L3
+L3 --> L4
+L4 --> L5
+L5 --> L6
+L6 --> L7
+L7 --> LLM
+@enduml

@@ -1,0 +1,36 @@
+@startuml
+!include ../plantuml-theme.iuml
+
+title 图 3.6 混合检索与安全过滤设计图
+
+start
+:查询输入;
+:查询规范化;
+
+if (短关键词捷径命中?) then (是)
+  :关键词过滤;
+  :BM25 直接返回;
+  :关键词打分加权\ntextContent + normalizedTextContent;
+  :Top-K 证据;
+  stop
+endif
+
+split
+  :查询向量化;
+  :稠密 kNN 召回\n+ 权限过滤 + 关键词过滤;
+split again
+  :词法查询\ntextContent + normalizedTextContent;
+  :稀疏召回 / BM25\n+ 权限过滤 + 关键词过滤;
+end split
+
+:候选窗口;
+:关键词打分加权\ntextContent + normalizedTextContent;
+:重排;
+:Top-K 证据;
+stop
+
+legend bottom
+设计级图中不出现 SearchController、
+EmbeddingClient 等实现类名。
+endlegend
+@enduml

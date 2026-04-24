@@ -1,0 +1,223 @@
+@startuml
+!include ../plantuml-theme.iuml
+top to bottom direction
+
+title 图 3.2 系统总体架构图
+
+skinparam packageStyle rectangle
+skinparam rectangleBorderColor #7F8C8D
+skinparam rectangleBackgroundColor #FFFFFF
+skinparam package<<outer>> {
+  BackgroundColor #FFF7F7
+  BorderColor #D7A6A6
+}
+skinparam package<<side_area>> {
+  BackgroundColor #F9F0F0
+  BorderColor #D7A6A6
+}
+skinparam package<<fe>> {
+  BackgroundColor #DCE8F7
+  BorderColor #A9BEDD
+}
+skinparam package<<api>> {
+  BackgroundColor #FFF1C9
+  BorderColor #E2C97C
+}
+skinparam package<<core>> {
+  BackgroundColor #DCE8F7
+  BorderColor #A9BEDD
+}
+skinparam package<<da>> {
+  BackgroundColor #FFF1C9
+  BorderColor #E2C97C
+}
+skinparam package<<infra>> {
+  BackgroundColor #DCE8F7
+  BorderColor #A9BEDD
+}
+skinparam package<<provider>> {
+  BackgroundColor #FCE8E8
+  BorderColor #D7A6A6
+}
+skinparam package<<model>> {
+  BackgroundColor #FCE8E8
+  BorderColor #D7A6A6
+}
+
+package "系统总体架构" <<outer>> as SYS {
+
+  package "前端展示层" <<fe>> as L_FE {
+    rectangle "聊天问答" as FE_Chat
+    rectangle "知识库管理" as FE_KB
+    rectangle "组织标签管理" as FE_Org
+    rectangle "用户管理\n（含用户信息）" as FE_User
+    rectangle "前端技术基座\nVue 3 / TypeScript / Vite" as FE_Stack
+
+    FE_Chat -[hidden]right- FE_KB
+    FE_KB -[hidden]right- FE_Org
+    FE_Org -[hidden]right- FE_User
+    FE_KB -[hidden]down- FE_Stack
+  }
+
+  package "接口与安全层" <<api>> as L_API {
+    rectangle "认证接口" as API_Auth
+    rectangle "上传接口" as API_Upload
+    rectangle "检索接口" as API_Search
+    rectangle "聊天接口" as API_Chat
+    rectangle "历史接口" as API_History
+    rectangle "文件接口" as API_File
+    rectangle "接口与安全基座\nSpring Boot / Spring Security / JWT / WebSocket" as API_Stack
+
+    API_Auth -[hidden]right- API_Upload
+    API_Upload -[hidden]right- API_Search
+    API_Search -[hidden]right- API_Chat
+    API_Chat -[hidden]right- API_History
+    API_History -[hidden]right- API_File
+    API_Search -[hidden]down- API_Stack
+  }
+
+  package "核心服务层" <<core>> as L_CORE {
+    package "第一行核心模块" as CORE_ROW1 {
+      package "用户与组织服务" as CORE_UserOrg {
+        rectangle "用户管理" as U1
+        rectangle "组织标签管理" as U2
+        rectangle "主组织切换" as U3
+        rectangle "权限范围计算" as U4
+
+        U1 -[hidden]right- U2
+        U3 -[hidden]right- U4
+        U1 -[hidden]down- U3
+      }
+
+      package "文档接入服务" as CORE_Upload {
+        rectangle "分片上传" as F1
+        rectangle "断点续传" as F2
+        rectangle "文件合并" as F3
+        rectangle "上传状态跟踪" as F4
+
+        F1 -[hidden]right- F2
+        F3 -[hidden]right- F4
+        F1 -[hidden]down- F3
+      }
+
+      package "入库处理服务" as CORE_Ingest {
+        rectangle "异步调度\nKafka" as I1
+        rectangle "文本解析\nApache Tika" as I2
+        rectangle "语义分块\nHanLP" as I3
+        rectangle "向量化与索引写入" as I4
+
+        I1 -[hidden]right- I2
+        I3 -[hidden]right- I4
+        I1 -[hidden]down- I3
+      }
+
+      CORE_UserOrg -[hidden]right- CORE_Upload
+      CORE_Upload -[hidden]right- CORE_Ingest
+    }
+
+    package "第二行核心模块" as CORE_ROW2 {
+      package "检索问答服务" as CORE_Retrieve {
+        rectangle "查询规范化" as R1
+        rectangle "混合检索" as R2
+        rectangle "权限过滤" as R3
+        rectangle "重排与来源回溯" as R4
+
+        R1 -[hidden]right- R2
+        R3 -[hidden]right- R4
+        R1 -[hidden]down- R3
+      }
+
+      package "会话编排服务" as CORE_Conversation {
+        rectangle "轮次识别" as C1
+        rectangle "提示词装配" as C2
+        rectangle "工作记忆" as C3
+        rectangle "流式生成" as C4
+
+        C1 -[hidden]right- C2
+        C3 -[hidden]right- C4
+        C1 -[hidden]down- C3
+      }
+
+      package "隐私治理服务" as CORE_Gov {
+        rectangle "敏感识别" as G1
+        rectangle "脱敏处理" as G2
+        rectangle "外送约束" as G3
+        rectangle "结果复核" as G4
+
+        G1 -[hidden]right- G2
+        G3 -[hidden]right- G4
+        G1 -[hidden]down- G3
+      }
+
+      CORE_Retrieve -[hidden]right- CORE_Conversation
+      CORE_Conversation -[hidden]right- CORE_Gov
+    }
+
+    rectangle "服务实现基座\nSpring Boot Service / Provider Adapter / Cache Coordination" as CORE_Base
+
+    CORE_ROW1 -[hidden]down- CORE_ROW2
+    CORE_ROW2 -[hidden]down- CORE_Base
+  }
+
+  package "数据访问层" <<da>> as L_DA {
+    rectangle "关系数据访问\nSpring Data JPA / Repository" as DA_SQL
+    rectangle "对象存储访问\nMinIO SDK" as DA_Object
+    rectangle "检索索引访问\nElasticsearch Client" as DA_Search
+    rectangle "缓存与消息访问\nRedis / Kafka" as DA_Runtime
+
+    DA_SQL -[hidden]right- DA_Object
+    DA_Object -[hidden]right- DA_Search
+    DA_Search -[hidden]right- DA_Runtime
+  }
+
+  package "数据与运行支撑层" <<infra>> as L_INFRA {
+    rectangle "MySQL" as DB_MySQL
+    rectangle "Redis" as DB_Redis
+    rectangle "MinIO" as DB_MinIO
+    rectangle "Elasticsearch" as DB_ES
+    rectangle "Kafka" as DB_Kafka
+
+    DB_MySQL -[hidden]right- DB_Redis
+    DB_Redis -[hidden]right- DB_MinIO
+    DB_MinIO -[hidden]right- DB_ES
+    DB_ES -[hidden]right- DB_Kafka
+  }
+
+  package "模型接入区" <<side_area>> as SIDE {
+    package "Provider 抽象层" <<provider>> as L_PROVIDER {
+      rectangle "聊天 Provider\n统一聊天模型访问接口" as P_Chat
+      rectangle "向量 Provider\n统一向量模型访问接口" as P_Embed
+      rectangle "可替换实现边界\n业务层不直接依赖厂商 SDK" as P_Boundary
+
+      P_Chat -[hidden]down- P_Embed
+      P_Embed -[hidden]down- P_Boundary
+    }
+
+    package "外部模型层" <<model>> as L_MODEL {
+      rectangle "DeepSeek\n生成模型服务" as M_Chat
+      rectangle "DashScope Embedding\n向量模型服务" as M_Embed
+
+      M_Chat -[hidden]down- M_Embed
+    }
+
+    L_PROVIDER -[hidden]down- L_MODEL
+  }
+
+  L_FE -[hidden]down- L_API
+  L_API -[hidden]down- L_CORE
+  L_CORE -[hidden]down- L_DA
+  L_DA -[hidden]down- L_INFRA
+
+  L_FE -[hidden]right- SIDE
+  L_API -[hidden]right- SIDE
+  L_CORE -[hidden]right- SIDE
+  L_DA -[hidden]right- SIDE
+  L_INFRA -[hidden]right- SIDE
+}
+
+legend bottom
+本图采用单一总外框布局：
+左侧为自上而下的分层主体结构，右侧为内嵌式模型接入区，
+不显示调用箭头，仅通过方框嵌套和并列排布体现模块化架构。
+endlegend
+@enduml

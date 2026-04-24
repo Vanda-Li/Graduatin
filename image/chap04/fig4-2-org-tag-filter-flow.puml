@@ -1,0 +1,32 @@
+@startuml
+!include ../plantuml-theme.iuml
+
+title 图 4.2 组织标签授权过滤流程图
+
+start
+:从 SecurityContext 读取\nuserId / role / primaryOrg;
+
+if (角色 = ADMIN?) then (是)
+  :返回全部可见范围;
+  stop
+endif
+
+:从 OrgTagCacheService 读取直接标签;
+:递归展开父级组织;
+:得到 EffectiveTags(u);
+
+if (访问文件或文件列表?) then (是)
+  :按 owner = userId\nOR is_public = true\nOR org_tag in EffectiveTags(u)\n构造过滤条件;
+  :返回 allow / deny 或列表约束;
+else (检索请求)
+  :构造 metadata filter;
+  :注入 Elasticsearch 查询;
+endif
+
+stop
+
+legend bottom
+组织继承的递归展开应收敛在缓存层，
+业务查询阶段只消费 EffectiveTags(u)。
+endlegend
+@enduml

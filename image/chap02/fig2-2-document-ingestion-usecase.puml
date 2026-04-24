@@ -1,0 +1,45 @@
+@startuml
+!include ../plantuml-theme.iuml
+left to right direction
+
+title 图 2.2 文档接入与处理用例图
+
+actor "普通用户" as User
+
+rectangle "文档接入与处理模块" {
+  usecase "上传文档" as UC_Upload
+  usecase "删除文档" as UC_Delete
+  usecase "查询上传状态" as UC_UploadStatus
+  usecase "查询处理状态" as UC_ProcessStatus
+  usecase "分片上传与断点续传" as UC_Resume
+  usecase "格式与内容校验" as UC_Validate
+  usecase "完整性校验" as UC_Integrity
+  usecase "异步入库" as UC_Ingest
+
+  ' layout constraints: left column = user-triggered use cases
+  UC_Upload -[hidden]down-> UC_Delete
+  UC_Delete -[hidden]down-> UC_UploadStatus
+  UC_UploadStatus -[hidden]down-> UC_ProcessStatus
+
+  ' layout constraints: right column = included / triggered capabilities
+  UC_Upload -[hidden]right-> UC_Validate
+  UC_Validate -[hidden]down-> UC_Resume
+  UC_Resume -[hidden]down-> UC_Integrity
+  UC_Resume -[hidden]right-> UC_Ingest
+}
+
+User --> UC_Upload
+User --> UC_Delete
+User --> UC_UploadStatus
+User --> UC_ProcessStatus
+
+UC_Upload .> UC_Validate : <<include>>
+UC_Upload .> UC_Resume : <<include>>
+UC_Resume .> UC_Integrity : <<include>>
+UC_Upload ..> UC_Ingest : <<触发>>
+
+legend bottom
+需求图只描述“用户可触发和可查询的能力”，
+不在图中直接出现 Kafka、MinIO、向量库等实现组件。
+endlegend
+@enduml

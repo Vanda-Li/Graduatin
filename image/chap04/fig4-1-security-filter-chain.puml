@@ -1,0 +1,37 @@
+@startuml
+!include ../plantuml-theme.iuml
+
+title 图 4.1 安全过滤链执行关系图
+
+actor "客户端" as Client
+participant "JWT 认证过滤器" as JwtFilter
+participant "SecurityContext" as SecurityContext
+participant "组织标签授权过滤器" as OrgFilter
+participant "OrgTagCacheService" as Cache
+participant "Controller / Service" as App
+
+Client -> JwtFilter : 携带 JWT 发起请求
+JwtFilter -> JwtFilter : 解析 userId / role / orgTags / primaryOrg
+
+alt 令牌合法
+  JwtFilter -> SecurityContext : 写入身份上下文
+  JwtFilter -> OrgFilter : 继续过滤链
+  OrgFilter -> Cache : 读取 EffectiveTags(u)
+  Cache --> OrgFilter : 返回有效标签集合
+
+  alt ADMIN
+    OrgFilter -> App : 放行
+  else USER
+    OrgFilter -> OrgFilter : 生成 owner / isPublic / orgTag 约束
+    OrgFilter -> App : 放行并携带授权范围
+  end
+else 令牌非法或过期
+  JwtFilter --> Client : 401 / 未认证
+end
+
+note right of OrgFilter
+两层过滤器共享身份，不共享授权结论。
+授权范围在组织过滤层实时计算，
+不依赖令牌中的 orgTags 快照。
+end note
+@enduml

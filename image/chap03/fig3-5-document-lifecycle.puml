@@ -1,0 +1,113 @@
+@startuml
+!include ../plantuml-theme.iuml
+top to bottom direction
+
+title 图 3.5 文档处理全生命周期设计图
+
+skinparam packageStyle rectangle
+skinparam linetype ortho
+skinparam defaultTextAlignment center
+skinparam ArrowThickness 1.1
+skinparam ArrowColor #666666
+skinparam rectangleBorderColor #7F8C8D
+skinparam rectangleBackgroundColor white
+skinparam defaultFontSize 12
+skinparam ranksep 12
+skinparam nodesep 6
+
+package "上传确认与分流" as M1 #FFF3E1 {
+  rectangle "上传完成" as U0
+  rectangle "分片上传\n与断点续传" as U1
+  rectangle "完整性校验" as U2
+  rectangle "文件大小\n分流判定" as U3
+  rectangle "直通处理 /\nKafka 异步" as U4
+  rectangle "进入后台\n处理链路" as U5
+
+  U0 -right-> U1
+  U1 -right-> U2
+  U2 -right-> U3
+  U3 -right-> U4
+  U4 -right-> U5
+}
+
+package "后台处理与切分" as M2 #E3F3FD {
+  rectangle "对象合并" as P0
+  rectangle "文本解析" as P1
+  rectangle "表格按行\n组合切分" as P2
+  rectangle "长段按句界\n继续切分" as P3
+  rectangle "长句按分词\n继续细分" as P4
+  rectangle "分块长度上限\n512 字符" as P5
+
+  P0 -right-> P1
+  P1 -right-> P2
+  P2 -right-> P3
+  P3 -right-> P4
+  P4 -right-> P5
+}
+
+package "隐私治理与文本视图" as M3 #F3E5F5 {
+  rectangle "敏感识别" as G0
+  rectangle "脱敏处理" as G1
+  rectangle "原始文本视图\n(rawText)" as G2
+  rectangle "安全文本视图\n(safeText)" as G3
+  rectangle "归一化文本视图\n(normalizedText)" as G4
+  rectangle "敏感元数据记录" as G5
+
+  G0 -right-> G1
+  G1 -right-> G2
+  G2 -right-> G3
+  G3 -right-> G4
+  G4 -right-> G5
+}
+
+package "向量化与索引写入" as M4 #E9F5E9 {
+  rectangle "语义分块" as V0
+  rectangle "外送前校验" as V1
+  rectangle "向量化" as V2
+  rectangle "知识索引写入" as V3
+  rectangle "更新可检索状态" as V4
+  rectangle "检索视图约束" as V5
+
+  V0 -right-> V1
+  V1 -right-> V2
+  V2 -right-> V3
+  V3 -right-> V4
+  V4 -right-> V5
+}
+
+package "阶段状态与恢复点" as M5 #FFF3E1 {
+  rectangle "已上传" as S0
+  rectangle "已合并" as S1
+  rectangle "已解析" as S2
+  rectangle "已向量化" as S3
+  rectangle "已索引" as S4
+  rectangle "可检索就绪 /\n失败恢复" as S5
+
+  S0 -right-> S1
+  S1 -right-> S2
+  S2 -right-> S3
+  S3 -right-> S4
+  S4 -right-> S5
+}
+
+package "删除同步清理" as M6 #F3E5F5 {
+  rectangle "删除请求" as D0
+  rectangle "删除 MySQL\n元数据" as D1
+  rectangle "删除 MinIO\n对象" as D2
+  rectangle "删除\nElasticsearch 索引" as D3
+  rectangle "清理 Redis /\n处理状态" as D4
+  rectangle "删除完成" as D5
+
+  D0 -right-> D1
+  D1 -right-> D2
+  D2 -right-> D3
+  D3 -right-> D4
+  D4 -right-> D5
+}
+
+M1 -down-> M2 : 进入后台处理
+M2 -down-> M3 : 解析后进入隐私治理
+M3 -down-> M4 : 三类文本视图进入索引链路
+M4 -down-> M5 : 更新阶段状态
+M5 -down-> M6 : 删除生命周期
+@enduml

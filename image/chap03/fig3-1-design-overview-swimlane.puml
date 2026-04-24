@@ -1,0 +1,58 @@
+@startuml
+!include ../plantuml-theme.iuml
+top to bottom direction
+
+title 图 3.1 系统主处理链路示意图
+
+rectangle "离线入库链" {
+  [上传确认] as Ingest1
+  [异步调度] as Ingest2
+  [文本解析] as Ingest3
+  [语义分块] as Ingest4
+  [向量化] as Ingest5
+  [索引写入] as Ingest6
+  [Ready] as Ingest7
+
+  Ingest1 --> Ingest2
+  Ingest2 --> Ingest3
+  Ingest3 --> Ingest4
+  Ingest4 --> Ingest5
+  Ingest5 --> Ingest6
+  Ingest6 --> Ingest7
+}
+
+rectangle "在线问答链" {
+  [问题输入] as Ask1
+  [查询规范化] as Ask2
+  [混合检索] as Ask3
+  [权限过滤] as Ask4
+  [Prompt 装配] as Ask5
+  [生成] as Ask6
+  [流式返回] as Ask7
+
+  Ask1 --> Ask2
+  Ask2 --> Ask3
+  Ask3 --> Ask4
+  Ask4 --> Ask5
+  Ask5 --> Ask6
+  Ask6 --> Ask7
+}
+
+rectangle "共享 Provider 抽象" {
+  [Embedding Provider] as Embed
+  [Chat Provider] as Chat
+}
+
+Ingest5 --> Embed
+Ask6 --> Chat
+
+note right of Ingest2
+上传确认与后台处理解耦，
+长任务移出在线请求路径。
+end note
+
+note right of Ask4
+权限过滤前置到检索阶段，
+而不是在生成后再裁剪结果。
+end note
+@enduml

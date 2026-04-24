@@ -1,0 +1,34 @@
+@startuml
+!include ../plantuml-theme.iuml
+left to right direction
+
+title 图 2.4 会话交互与文档服务用例图
+
+actor "普通用户" as User
+
+rectangle "会话交互与文档服务模块" {
+  usecase "开启新会话" as UC_NewSession
+  usecase "实时增量呈现" as UC_Stream
+  usecase "返回完成状态" as UC_Done
+  usecase "历史会话回读" as UC_History
+  usecase "分页读取历史" as UC_Pagination
+  usecase "查看文件列表" as UC_FileList
+  usecase "预览文本内容" as UC_Preview
+  usecase "生成安全下载链接" as UC_Download
+}
+
+User --> UC_NewSession
+User --> UC_History
+User --> UC_Pagination
+User --> UC_FileList
+User --> UC_Preview
+User --> UC_Download
+
+UC_NewSession .> UC_Stream : <<include>>
+UC_NewSession .> UC_Done : <<include>>
+
+legend bottom
+这张图需要把“会话交互”和“文档服务”并列画出，
+不能只剩会话生命周期管理。
+endlegend
+@enduml

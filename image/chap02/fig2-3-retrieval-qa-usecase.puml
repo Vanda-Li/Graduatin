@@ -1,0 +1,31 @@
+@startuml
+!include ../plantuml-theme.iuml
+left to right direction
+
+title 图 2.3 检索与问答用例图
+
+actor "用户" as User
+
+rectangle "检索与问答模块" {
+  usecase "知识问答" as UC_QA
+  usecase "知识检索" as UC_Retrieve
+  usecase "权限过滤" as UC_Filter
+  usecase "结果排序优化" as UC_Rerank
+  usecase "来源回溯" as UC_Citation
+  usecase "多轮追问" as UC_FollowUp
+}
+
+User --> UC_QA
+User --> UC_FollowUp
+
+UC_QA .> UC_Retrieve : <<include>>
+UC_Retrieve .> UC_Filter : <<include>>
+UC_Retrieve .> UC_Rerank : <<include>>
+UC_QA .> UC_Citation : <<include>>
+UC_FollowUp .> UC_QA : <<extend>>
+
+legend bottom
+图题建议从“检索模块”改为“检索与问答”，
+以覆盖正文中的问答生成、来源回溯和多轮追问需求。
+endlegend
+@enduml

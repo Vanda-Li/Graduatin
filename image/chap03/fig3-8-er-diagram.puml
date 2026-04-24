@@ -1,0 +1,72 @@
+@startuml
+!include ../plantuml-theme.iuml
+hide methods
+hide stereotypes
+left to right direction
+
+title 图 3.8 系统 E-R 图（PlantUML 初稿）
+
+class "users" as Users {
+  +id
+  --
+  username
+  role
+  org_tags
+  primary_org
+}
+
+class "organization_tags" as OrgTags {
+  +tag_id
+  --
+  name
+  parent_tag
+  created_by
+}
+
+class "file_upload" as FileUpload {
+  +file_md5
+  --
+  file_name
+  user_id
+  org_tag
+  is_public
+  status
+  sensitivity_level
+  sensitive_types
+}
+
+class "chunk_info" as ChunkInfo {
+  +file_md5
+  +chunk_index
+  --
+  chunk_md5
+  storage_path
+}
+
+class "document_vectors" as DocumentVectors {
+  +vector_id
+  --
+  file_md5
+  chunk_id
+  text_content
+  safe_text_content
+  normalized_text_content
+  is_restricted
+  external_model_allowed
+  sensitivity_level
+}
+
+Users "1" --> "0..*" FileUpload : uploads
+OrgTags "1" --> "0..*" FileUpload : org_tag
+Users "1" --> "0..*" OrgTags : created_by
+FileUpload "1" --> "0..*" ChunkInfo : has chunks
+FileUpload "1" --> "0..*" DocumentVectors : has blocks
+OrgTags "0..1" --> "0..*" OrgTags : parent_tag
+OrgTags "1" --> "0..*" Users : primary_org
+
+legend bottom
+如果终稿必须使用严格的 Crow's Foot 样式，
+建议你在 draw.io 中按此结构人工重画一次。
+但从语义和字段关系上，这份 PlantUML 初稿已经可以直接用。
+endlegend
+@enduml

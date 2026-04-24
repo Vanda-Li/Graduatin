@@ -1,13 +1,13 @@
 % !TeX root = ./main.tex
 
 \sysusetup{
-  title                = {基于语义检索的智能化知识管理系统设计与实现},
-  title*               = {Design and Implementation of an Intelligent Knowledge Management System Based on Semantic Retrieval},
+  title                = {基于RAG技术的智能问答系统设计与实现},
+  title*               = {Design and Implementation of an Intelligent Question-Answering System Based on RAG Technology},
   author               = {黎万达},
   author*              = {Li Wanda},
   speciality           = {计算机科学与技术},
   speciality*          = {Computer Science and Technology},
-  supervisor           = {温武少~教授},
+  supervisor           = {温武少（教授）},
   supervisor*          = {Prof. Wen Wushao},
   % practice-supervisor  = {XXX~教授, XXX~教授},
   % practice-supervisor* = {Prof. XXX, Prof. XXX},
@@ -53,6 +53,26 @@
 % 控制图表浮动位置
 \usepackage{float}
 \usepackage[section]{placeins}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+
+% 压缩图表留白并提升浮动体排版弹性
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{5}
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.08}
+\renewcommand{\floatpagefraction}{0.8}
+\makeatletter
+% 浮动专页默认会把单个表图垂直居中；这里改为贴近页首，减少大块留白。
+\setlength{\@fptop}{0pt}
+\makeatother
+\setlength{\textfloatsep}{10pt plus 2pt minus 4pt}
+\setlength{\floatsep}{8pt plus 2pt minus 3pt}
+\setlength{\intextsep}{8pt plus 2pt minus 3pt}
+\setlength{\abovecaptionskip}{6pt}
+\setlength{\belowcaptionskip}{2pt}
 
 % 算法
 \usepackage[ruled,linesnumbered]{algorithm2e}

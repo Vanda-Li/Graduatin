@@ -1,0 +1,23 @@
+@startuml
+!include ../plantuml-theme.iuml
+left to right direction
+
+title 图 3.3 权限映射关系图
+
+rectangle "用户属性\nrole\nuserId\nprimaryOrg\ndirectTags" as UserAttr
+rectangle "有效标签展开\nEffectiveTags(u)" as Effective
+rectangle "文档元数据\nowner\norgTag\nisPublic" as DocMeta
+rectangle "可见性规则\nADMIN -> all\nUSER -> owner OR isPublic OR orgTag in EffectiveTags(u)" as Rule
+rectangle "可见范围\nVisible Scope V(u)" as Visible
+
+UserAttr --> Effective
+UserAttr --> Rule
+Effective --> Rule
+DocMeta --> Rule
+Rule --> Visible
+
+legend bottom
+“公开访问”应由文档属性 isPublic 表达，
+不要再用 Primary: PUBLIC 代替公开语义。
+endlegend
+@enduml

@@ -1,0 +1,53 @@
+@startuml
+!include ../plantuml-theme.iuml
+
+title 图 3.4 权限判定与数据隔离流程图
+
+start
+:接收请求;
+:恢复登录身份;
+
+if (认证通过?) then (是)
+else (否)
+  :拒绝访问;
+  stop
+endif
+
+if (请求类型 = 检索?) then (是)
+  if (角色 = ADMIN?) then (是)
+    :不注入额外过滤;\n允许全域候选;
+  else (否)
+    :计算 EffectiveTags(u);
+    :注入 metadata filter:\nowner = userId OR isPublic = true\nOR orgTag in EffectiveTags(u);
+  endif
+  :执行混合检索;
+  stop
+else (文件访问)
+  if (角色 = ADMIN?) then (是)
+    :ALLOW;
+    stop
+  else (否)
+    :加载文档 owner / isPublic / orgTag;
+    if (owner = userId?) then (是)
+      :ALLOW;
+    else (否)
+      if (isPublic = true?) then (是)
+        :ALLOW;
+      else (否)
+        if (orgTag in EffectiveTags(u)?) then (是)
+          :ALLOW;
+        else (否)
+          :DENY;
+        endif
+      endif
+    endif
+    stop
+  endif
+endif
+
+legend bottom
+同一套授权语义在两类场景中的输出不同：
+- 检索场景输出 metadata filter
+- 文件访问场景输出 allow / deny
+endlegend
+@enduml

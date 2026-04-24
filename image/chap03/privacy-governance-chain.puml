@@ -1,0 +1,92 @@
+@startuml
+!include ../plantuml-theme.iuml
+top to bottom direction
+
+title 隐私治理链路图
+
+skinparam linetype ortho
+skinparam packageStyle rectangle
+skinparam defaultTextAlignment center
+skinparam ArrowThickness 1.1
+skinparam ArrowColor #666666
+skinparam rectangleBorderColor #7F8C8D
+skinparam rectangleBackgroundColor white
+skinparam defaultFontSize 12
+skinparam ranksep 14
+skinparam nodesep 10
+
+rectangle "输入文本 / 用户问题" as Input #FFF3E1
+rectangle "敏感识别" as Detect #FDEDEC
+rectangle "脱敏处理\n生成 safeText" as Sanitize #FDEDEC
+rectangle "元数据标注\nrestricted / externalModelAllowed /\nsensitivityLevel" as Tag #FDEDEC
+
+rectangle "索引视图\nsafeText + restricted + sensitivityLevel" as IndexView #E8F4FD
+rectangle "外发视图\nsafeText + externalModelAllowed +\nrestricted + sensitivityLevel" as ExternalView #E8F4FD
+rectangle "日志视图\nsafeText + restricted + sensitivityLevel" as LogView #E8F4FD
+
+rectangle "模型输出" as ModelOutput #E9F7EF
+rectangle "输出复核" as Review #FDEDEC
+
+rectangle "放行" as Pass #E9F7EF
+rectangle "拦截" as Block #FADBD8
+rectangle "二次脱敏" as RedactAgain #FCF3CF
+
+Input -down-> Detect
+Detect -down-> Sanitize
+Sanitize -down-> Tag
+Tag -right-> IndexView
+Tag -down-> ExternalView
+Tag -left-> LogView
+ExternalView -down-> ModelOutput
+ModelOutput -down-> Review
+Review -down-> Pass
+Review -left-> Block
+Review -right-> RedactAgain
+
+note right of Detect
+识别阶段覆盖三类对象：
+个人身份信息、
+系统凭据、
+企业受限信息。
+end note
+
+note right of Sanitize
+命中后执行掩码替换、
+占位替换或强制清除，
+统一生成 safeText。
+end note
+
+note right of Tag
+把治理结果写入分块与索引记录，
+供检索、外发、历史与日志链路复用。
+end note
+
+note right of IndexView
+用于内部检索与索引写入。
+受限内容可在授权范围内参与内部召回。
+end note
+
+note right of ExternalView
+仅在 externalModelAllowed = true 时
+可进入外部 Embedding 计算、
+Prompt 上下文和模型外发链路。
+end note
+
+note left of LogView
+日志、历史与审计仅记录治理后内容，
+不保留未脱敏原文。
+end note
+
+note right of Review
+生成后再次扫描敏感模式；
+高风险命中时执行拦截
+或再次脱敏。
+end note
+
+legend bottom
+主链对应“识别 -> 脱敏 -> 标注 -> 外发 -> 复核”，
+三条支路对应“索引视图 / 外发视图 / 日志视图”。
+图中四个字段必须贯穿治理链路：
+safeText、restricted、externalModelAllowed、sensitivityLevel。
+endlegend
+@enduml

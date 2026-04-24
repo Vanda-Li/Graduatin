@@ -1,21 +1,20 @@
 \chapter{系统实现}
 \label{cha:implementation}
 
+本章说明各核心模块的实现细节，关注点集中在三类工程约束：上传与入库阶段的多组件状态一致性、混合检索与流式问答的在线时延控制，以及隐私治理沿索引、外发与日志三个节点的分层介入方式。表~\ref{tab:implementation-env} 列出开发与运行环境。
+
 \section{开发环境与关键依赖}
 \label{sec:implementation_env}
 
-系统实现与测试在 Ubuntu 环境下完成。服务器端采用基于 Java 17 和 Spring Boot 3.4.2 的后端服务，并与 Spring Security、MySQL、Redis、MinIO、Kafka 和 Elasticsearch 等组件协同运行；客户端采用基于 Vue 3、TypeScript 与 Vite 的 Web 前端，通过浏览器访问知识库、问答和管理页面。表 \ref{tab:implementation-env} 汇总了当前实现的关键开发依赖与运行组件。
-
-\begin{table}[H]
+\begin{table}[!htbp]
     \centering
-    \caption{关键开发依赖与运行组件}
+    \caption{开发与运行环境}
     \label{tab:implementation-env}
     {\small
     \begin{tabularx}{\textwidth}{L{3.1cm}Y}
         \toprule
         类别 & 组件 \\
         \midrule
-        操作系统 & Ubuntu 24.04 LTS\\
         服务器端基础框架 & Java 17、Spring Boot 3.4.2 \\
         客户端基础框架 & Vue 3.5.13、TypeScript 5.8.3、Vite 6.3.5 \\
         安全依赖 & Spring Security、JWT 0.11.5 \\
@@ -23,7 +22,7 @@
         检索依赖 & Elasticsearch Java Client 8.10.0 \\
         消息与缓存依赖 & Spring Kafka 3.2.1、Redis Starter \\
         文件存储与对象服务 & MinIO SDK 8.5.12 \\
-        外部模型能力 & DeepSeek 对话接口、千问 Embedding 接口 \\
+        外部模型能力 & DeepSeek Chat API、DashScope Text Embedding API \\
         \bottomrule
     \end{tabularx}
     }
@@ -32,406 +31,243 @@
 \section{身份认证与组织权限实现}
 \label{sec:auth_impl}
 
-实现层首先需要解决身份与组织边界的落地问题，因为后续上传、检索、下载和问答都依赖统一的用户上下文。权限的过滤链关系如图 \ref{fig:security-filter-chain} 所示。
+认证链路在令牌快照与实时查库之间存在取舍：前者可降低查库频率，但权限变更无法即时生效；后者可保证实时性，但对高频请求的认证开销不可忽视。为此，系统将身份认证与组织授权拆分为两层独立过滤器，通过 Spring Security 过滤链依次执行，其调用关系见图~\ref{fig:security-filter-chain}。
 
-\begin{figure}[H]
+\begin{figure}[!htbp]
     \centering
-    \includegraphics[width=0.85\textwidth]{image/chap04/filter.png}
+    \includegraphics[width=0.88\textwidth]{image/chap04/fig4-1-security-filter-chain.pdf}
     \caption{安全过滤链执行关系图}
     \label{fig:security-filter-chain}
 \end{figure}
 
-本节按照“令牌生成、注册初始化、资源过滤”三条链路展开，说明权限信息如何从登录阶段被写入系统，并持续传递到后续访问控制过程中。
+两层过滤器只共享身份，不共享授权结论。令牌解析阶段将用户身份写入 \texttt{SecurityContext}，组织边界校验再基于该身份独立完成，从而把身份恢复与资源授权明确拆开。
 
-\subsection{JWT 认证链路实现}
+\subsection{令牌认证链路实现}
 
-系统的认证入口位于用户登录接口。用户登录成功后，后端根据用户名查询用户实体，并在 JWT 中写入角色、用户 ID、组织标签和主组织标签等信息，为后续请求提供统一的身份上下文。
-
-这一处理使后续模块不必重复查询完整用户对象，而能够直接基于令牌中的核心身份字段完成访问控制与上下文构建。对应的 JWT 载荷构造如下。
-
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=JWT 载荷生成,
- language=Java
-]
-Map<String, Object> claims = new HashMap<>();
-claims.put("tokenId", tokenId);
-claims.put("role", user.getRole().name());
-claims.put("userId", user.getId().toString());
-claims.put("orgTags", user.getOrgTags());
-claims.put("primaryOrg", user.getPrimaryOrg());
-
-String token = Jwts.builder()
-        .setClaims(claims)
-        .setSubject(username)
-        .setExpiration(new Date(expireTime))
-        .signWith(key, SignatureAlgorithm.HS256)
-        .compact();
-\end{lstlisting}
-
-在请求入口处，\texttt{SecurityConfig} 负责配置认证与授权规则。系统先插入 \texttt{JwtAuthenticationFilter} 完成身份识别，再由 \texttt{OrgTagAuthorizationFilter} 执行组织标签与资源访问控制。
+JSON Web Token（JWT）载荷携带 \texttt{role}、\texttt{userId}、\texttt{orgTags} 和 \texttt{primaryOrg}。字段 \texttt{orgTags} 记录令牌签发时的组织归属快照，仅用于快速恢复用户身份，不作为实时授权依据。过滤器在单次解析中完成用户上下文恢复并写入 \texttt{SecurityContext}；后续资源判定则转交 \texttt{OrgTagCacheService} 提供的实时有效标签集合，管理员调整组织权限后，无需等待令牌重签即可生效。
 
 
 \subsection{私人空间与组织标签实现}
 
-系统并未仅依赖管理员手工分配权限，而是在用户注册时自动为每个用户创建私人组织标签，并将其作为默认主组织标签。权限初始化直接放在注册环节完成，使用户首次登录后即可拥有独立的私有文档空间，而不必等待管理员额外配置。对应的初始化过程如下。
+注册流程在创建用户记录后即按 \texttt{PRIVATE\_TAG\_PREFIX + username} 规则生成私人标签并将其设为默认主组织，随后依次回写 \texttt{orgTags} 与 \texttt{primaryOrg} 字段并刷新缓存，确保组织归属在用户首次登录前已完成初始化。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=用户注册时的私人组织标签创建,
- language=Java
-]
-String privateTagId = PRIVATE_TAG_PREFIX + username;
-createPrivateOrgTag(privateTagId, username, user);
-
-user.setOrgTags(privateTagId);
-user.setPrimaryOrg(privateTagId);
-userRepository.save(user);
-
-orgTagCacheService.cacheUserOrgTags(username, List.of(privateTagId));
-orgTagCacheService.cacheUserPrimaryOrg(username, privateTagId);
-\end{lstlisting}
-
-在组织标签分配完成后，系统通过缓存服务维护用户直接标签集合与有效标签集合。这里的“有效标签”不仅包含用户显式拥有的标签，还会递归展开父级标签，用于检索与文件列表查询阶段的权限过滤。过滤的流程如图 \ref{fig:org-filter-flow} 所示。
-
-\begin{figure}[H]
-    \centering
-    \includegraphics[width=0.45\textwidth]{image/chap04/orgfilter.png}
-    \caption{组织标签授权过滤流程图}
-    \label{fig:org-filter-flow}
-\end{figure}
-
-代码实现将权限控制拆分为两层：过滤器层优先完成快速身份拦截与资源访问判定，服务层再结合 \texttt{OrgTagCacheService} 的有效标签集合完成面向检索与文件列表的细粒度过滤。这种“双层校验”结构构成了当前版本的权限实现基础。
+缓存层维护直接标签集合与有效标签集合。前者记录用户直接归属的组织节点，后者沿父级关系递归展开，覆盖所有可继承的上层组织。检索过滤与文件列表权限均基于有效标签集合完成过滤（见图~\ref{fig:org-filter-flow}），层级继承的递归展开因而收敛在缓存层，业务查询阶段无需反复遍历组织树。
 
 \section{文档上传与异步入库实现}
 \label{sec:upload_impl}
 
-文档入库实现横跨前端调度、对象存储和后台处理三层。本节将依次说明上传任务如何在前端形成、分片状态如何在服务端落盘、后台任务如何被投递，以及文本分块与向量索引如何最终建立。
+大文件接入跨越上传、合并和后台处理多个阶段，任何一处状态失配都会影响后续入库。上传环节需要避免重复写入，合并环节要校验分片状态与对象实体的一致性，后台处理则必须支持失败后的重新进入。
+
+\begin{figure}[!tp]
+    \centering
+    \includegraphics[width=0.44\textwidth,height=0.46\textheight,keepaspectratio]{image/chap04/fig4-2-org-tag-filter-flow.pdf}
+    \caption{组织标签授权过滤流程图}
+    \label{fig:org-filter-flow}
+\end{figure}
 
 \subsection{前端分片上传与断点续传}
 
-前端知识库页面通过 \texttt{useKnowledgeBaseStore} 维护上传任务队列，并在 \texttt{calculateMD5} 中以 5 MB 固定粒度增量读取文件、计算 MD5。随后，前端以文件为单位串行调度分片上传请求，并根据服务端返回的 \texttt{uploadedChunks} 恢复上传位置。对应的分片调度逻辑见代码。
+前端以 \texttt{useKnowledgeBaseStore} 维护上传任务队列，由 \texttt{calculateMD5} 以 5~MB 为粒度增量读取文件切片并累积计算哈希，避免大文件整体加载带来的浏览器内存压力。上传接口以 \texttt{fileMd5}、\texttt{chunkIndex}、\texttt{chunkMd5} 及二进制分片为载荷，服务端在响应中返回已确认的 \texttt{uploadedChunks} 列表；续传时，前端据此仅补发缺失分片。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=前端分片调度逻辑,
- language=Java
-]
-const totalChunks = Math.ceil(task.totalSize / chunkSize);
-for (let i = 0; i < totalChunks; i += 1) {
-  if (!task.uploadedChunks.includes(i)) {
-    task.chunkIndex = i;
-    const success = await uploadChunk(task);
-    if (!success) throw new Error('分片上传失败');
-  }
-}
-\end{lstlisting}
-
-由于前端使用任务队列和请求取消标识维护上传状态，系统能够支持多文件排队上传，并在上传中断后继续执行未完成任务。前端因此承担了上传编排与状态恢复的第一层职责，后端则只需要关注分片接收、一致性校验与后续处理。
+\texttt{UploadController} 在首个分片到达时同步校验文件扩展名与多用途互联网邮件扩展类型（Multipurpose Internet Mail Extensions, MIME），拒绝扩展名和实际类型不符的文件。分片发送失败后，任务立即停止自动重试并转为人工续传，以免网络抖动期间静默产生重复请求，打乱服务端已确认分片计数与前端进度显示。服务端再借助 Redis 位图实现分片级幂等，同一分片重复到达时直接返回已确认状态。
 
 \subsection{服务端分片落盘与对象合并}
 
-服务端上传接口的实现重点在于同时维护三类状态：文件记录、分片位图和对象存储。进入 \texttt{UploadService.uploadChunk} 后，系统首先确保 \texttt{file\_upload} 中存在文件记录；随后通过 Redis 位图判断分片状态，并在未上传时将分片落入 MinIO，同时补写 \texttt{chunk\_info} 表。
+服务端分片落盘与对象合并需要协调 MySQL、Redis 和 MinIO 三层状态。上传接口先确保 \texttt{file\_upload} 中存在文件记录，再依据 Redis 位图判断分片是否已上传，最后将新分片写入 MinIO 并补写分片记录。
 
-这种做法将“用户是否已发起上传”“某个分片是否已经存在”与“对象文件是否真正写入存储”分离处理，便于在断点续传和重复请求场景下保持一致性。相应状态维护过程如下。
+上传状态由 MySQL、Redis 和 MinIO 共同维护。三层状态的划分依据访问特征而定：分片记录与文件元数据涉及事务性写入，由 MySQL 承担持久化；重传探测需要毫秒级响应且无需持久，适合 Redis 位图做幂等判断；MinIO 作为对象存储不适合处理高频小粒度写入，仅保存合并后的对象内容。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=分片落盘与状态维护,
- language=Java
-]
-if (!fileExists) {
-    FileUpload fileUpload = new FileUpload();
-    fileUpload.setFileMd5(fileMd5);
-    fileUpload.setFileName(fileName);
-    fileUpload.setTotalSize(totalSize);
-    fileUpload.setStatus(0);
-    fileUpload.setUserId(userId);
-    fileUpload.setOrgTag(orgTag);
-    fileUpload.setPublic(isPublic);
-    fileUploadRepository.save(fileUpload);
-}
+分片按“MinIO 写入 $\to$ Redis 位图更新 $\to$ MySQL 记录写入”的顺序推进。MinIO 对象覆盖写天然满足幂等性，因此位图更新前若发生失败，重传只会覆盖原对象，不会引入重复数据。MySQL 记录缺失时，后续合并会因记录数与分片对象数不一致而被拒绝；前端随后通过 \texttt{/upload/status} 重新拉取确认列表，仅补传异常分片后再重试。
 
-if (!chunkUploaded) {
-    String storagePath = "chunks/" + fileMd5 + "/" + chunkIndex;
-    minioClient.putObject(
-            PutObjectArgs.builder()
-                    .bucket("uploads")
-                    .object(storagePath)
-                    .stream(file.getInputStream(), file.getSize(), -1)
-                    .contentType(file.getContentType())
-                    .build()
-    );
-    markChunkUploaded(fileMd5, chunkIndex, userId);
-    saveChunkInfo(fileMd5, chunkIndex, chunkMd5, storagePath);
-}
-\end{lstlisting}
+全部分片到齐后，前端调用 \texttt{/api/v1/upload/merge} 触发合并，请求载荷包含 \texttt{fileMd5} 与文件名。合并阶段先根据 \texttt{file\_upload.totalSize} 计算期望分片数，再核对 \texttt{ChunkInfo} 记录数量，并逐个检查 MinIO 中的分片对象是否存在；任一步不一致都直接拒绝合并。若合并被拒绝，前端通过 \texttt{/upload/status} 重新获取 \texttt{uploadedChunks}，只补传缺失分片后再重试。文件合并流程见图~\ref{fig:file-merge-flow}。
 
-合并完成后，系统还会清理上传标记并更新文件状态，使对象一致性与业务状态推进在同一节点对齐。后续控制器正是在这一状态基础上继续发起异步入库任务。
-
-当全部分片上传完成后，前端调用 \texttt{/api/v1/upload/merge} 触发服务端合并。合并阶段不会依赖前端的“完成标记”，而是重新检查数据库与 Redis 中的状态，以确保文件完整性。系统随后按照分片顺序构造 \texttt{ComposeSource} 列表，在 MinIO 中生成稳定对象 \texttt{merged/fileMd5}。文件合并流程如图 \ref{fig:file-merge-flow} 所示。
-
-\begin{figure}[H]
+\begin{figure}[!htbp]
     \centering
-    \includegraphics[height=0.42\textheight,keepaspectratio]{image/chap04/merge.png}
+    \includegraphics[width=0.28\textwidth,height=0.44\textheight,keepaspectratio]{image/chap04/merge.png}
     \caption{文件合并实现流程图}
     \label{fig:file-merge-flow}
 \end{figure}
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=MinIO 对象合并,
- language=Java
-]
-List<ComposeSource> sources = partPaths.stream()
-        .map(path -> ComposeSource.builder().bucket("uploads").object(path).build())
-        .collect(Collectors.toList());
+合并前先校验分片记录数与对象存在性，把状态偏差阻断在 \texttt{composeObject} 调用之前。当前实现以串行方式逐一调用 \texttt{statObject} 检查分片存在性；分片数量较多时会引入线性等待，该路径的并行化留待后续优化。
 
-minioClient.composeObject(
-        ComposeObjectArgs.builder()
-                .bucket("uploads")
-                .object("merged/" + fileMd5)
-                .sources(sources)
-                .build()
-);
+对象合并成功后，系统立即删除上传标记，并把 \texttt{file\_upload.status} 推进为已合并，为后续入库提供稳定起点。
 
-deleteFileMark(fileMd5, userId);
-fileUpload.setStatus(1);
-fileUploadRepository.save(fileUpload);
-\end{lstlisting}
+\subsection{Kafka 异步入库实现}
 
-\subsection{Kafka 异步入库与文档解析实现}
+异步入库链路通过 Kafka 解耦上传确认与后台处理，使上传接口不再等待完整入库结束。合并完成后，控制器依据文件大小分流：小于 \texttt{file.processing.inline-size-threshold}（默认 1 MB）的文件同步执行入库逻辑，以减少小文件进入消息队列后的排队延迟；其余文件投递至 Kafka，由后台异步处理。
 
-文件合并完成后，控制器将 \texttt{fileMd5}、对象访问地址、用户信息和权限信息封装为 \texttt{FileProcessingTask}，并通过事务消息发送到 Kafka。上传请求因此能够尽快返回，而解析与向量化转入后台执行。
+为保证处理链路的一致性，系统采用“状态先行”策略：文件状态先写入“已合并”，再发送处理消息；若消息投递失败，由重试机制与死信主题承担补偿。\texttt{KafkaConfig} 负责处理主题、死信主题和监听并发度等配置，监听器通过 \texttt{DefaultErrorHandler} 与指数退避策略处理失败消息。分区键使用文件 MD5，使同一文件的任务始终落在同一分区。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=文件处理任务投递,
- language=Java
-]
-FileProcessingTask task = new FileProcessingTask(
-        request.fileMd5(),
-        objectUrl,
-        request.fileName(),
-        fileUpload.getUserId(),
-        fileUpload.getOrgTag(),
-        fileUpload.isPublic()
-);
+消费者收到任务后，优先按 \texttt{merged/fileMd5} 从 MinIO 下载对象；路径不可用时再回退到任务中的文件路径或 URL。下载成功后，\texttt{FileProcessingConsumer} 继续调用解析与向量化服务；处理失败时抛出异常，由监听器重试，重试耗尽后写入死信主题。
 
-kafkaTemplate.executeInTransaction(kt -> {
-    kt.send(kafkaConfig.getFileProcessingTopic(), task);
-    return true;
-});
-\end{lstlisting}
+\subsection{文档解析实现}
 
-事务消息的作用并不只是把任务写入 Kafka，还在于将“文件已经完成合并”与“后台处理任务已经可靠投递”绑定到同一提交边界内，避免前端看到上传成功而后台处理链路尚未建立的情况。
+文档解析需在内存受限条件下处理任意大小的文件，同时尽量保持语义切分边界的完整性。纯文本文件可直接进入解析流程，以减少额外的格式识别开销；其余格式则通过 Tika 的 \texttt{AutoDetectParser} 进行流式文本提取。
 
-消费者收到任务后，会先下载合并后的文件对象，再顺序调用解析服务和向量化服务。解析阶段采用 Tika 的 \texttt{AutoDetectParser} 执行流式文本提取，并在内部使用“父块缓存+子块切分”的方式避免大文件一次性读入内存；对于超长句子，则通过 HanLP 分词进一步细化切分粒度。相关逻辑如下。
+为防止大文件整体加载，系统采用“父块缓冲、子块切分”的两级处理策略：\texttt{StreamingContentHandler} 在 SAX 回调中持续累积字符，当缓冲量达到父块阈值时触发切分，将父块交由语义切分器拆解为子块；句子超过长度限制时，再由 HanLP 在句界处继续细分，保证最终语义单元的粒度可控。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=流式解析与语义切分,
- language=Java
-]
-try (BufferedInputStream bufferedStream =
-        new BufferedInputStream(fileStream, bufferSize)) {
-    StreamingContentHandler handler =
-            new StreamingContentHandler(fileMd5, userId, orgTag, isPublic);
-    AutoDetectParser parser = new AutoDetectParser();
-    parser.parse(bufferedStream, handler, metadata, context);
-}
-
-@Override
-public void characters(char[] ch, int start, int length) {
-    buffer.append(ch, start, length);
-    if (buffer.length() >= parentChunkSize) {
-        processParentChunk();
-    }
-}
-\end{lstlisting}
+文本提取完成后，系统以 \texttt{file.parsing.chunk-size} 控制最终子块长度。切分逻辑由 \texttt{ParseService} 按类型分支实现：表格段保留行结构写入单独分块；普通超长段落调用句界检测继续拆分；单句仍超长时由 HanLP 的分词结果提供断点，确保最终分块长度受控。每个子块入库前执行 \texttt{protectForIndexing}，同步写入原始文本、安全文本、归一化文本以及敏感级别、受限标记和敏感类型，并在文档结束时回写文件级敏感摘要。
 
 \subsection{向量化与索引写入实现}
 
-向量化阶段由 \texttt{VectorizationService} 驱动。系统先从 \texttt{document\_vectors} 中读取同一文件的全部文本分块，再通过 \texttt{EmbeddingClient} 批量调用嵌入接口生成 2048 维向量，最终组装为 \texttt{EsDocument} 批量写入 \texttt{knowledge\_base} 索引。其关键代码如下。
+向量化阶段既要控制调用成本和批量吞吐，也要满足敏感信息不外传的合规要求。\texttt{VectorizationService} 通过 \texttt{EmbeddingModelClient} 调用外部嵌入模型，外送文本统一使用 \texttt{safeTextContent}；生成 2048 维向量后，再连同文件标识、权限信息、归一化文本和敏感元数据写入 \texttt{knowledge\_base} 索引。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=向量生成与索引写入,
- language=Java
-]
-List<TextChunk> chunks = fetchTextChunks(fileMd5);
-List<String> texts = chunks.stream()
-        .map(TextChunk::getContent)
-        .toList();
-List<float[]> vectors = embeddingClient.embed(texts);
+\texttt{EmbeddingClient} 围绕重复请求消除、批量并行和并发回压组织调用控制。Caffeine 缓存与 \texttt{inFlightVectorCache} 分别用于复用已有向量和合并并发中的同文本请求；\texttt{embeddingBatchExecutor} 负责批量文本的并行处理；\texttt{AdaptiveEmbeddingConcurrencyLimiter} 则根据实时负载调整并发上限。
 
-List<EsDocument> esDocuments = IntStream.range(0, chunks.size())
-        .mapToObj(i -> new EsDocument(
-                UUID.randomUUID().toString(),
-                fileMd5,
-                chunks.get(i).getChunkId(),
-                chunks.get(i).getContent(),
-                vectors.get(i),
-                "deepseek-embed",
-                userId,
-                orgTag,
-                isPublic
-        ))
-        .toList();
-
-elasticsearchService.bulkIndex(esDocuments);
-\end{lstlisting}
-
-这种写法将分块内容、权限元数据与向量结果一次性拼装为索引文档，减少了写入阶段的中间转换。检索阶段也能够直接依据 \texttt{userId}、\texttt{orgTag} 和公开属性执行过滤。
+自适应并发限制器以 $\alpha=0.25$ 的指数加权移动平均（EWMA）跟踪时延趋势，使最近一次调用在限流决策中占更高权重。低时延阈值设为 1800~ms，高时延阈值设为 3500~ms：连续 $N_{\text{up}}=6$ 次健康完成后，并发上限增加 1，对应约 10~s 的稳定观测窗口，用于抑制并发上限在恢复阶段的频繁抖动；一旦单次时延或 EWMA 超过高阈值，或出现 429、5xx 响应，并发上限立即减 1，以便优先响应外部服务压力变化。
 
 \section{混合检索与流式问答实现}
 \label{sec:chat_impl}
 
-检索问答实现的关键不在于单个接口是否可调用，而在于检索、会话状态和流式输出是否共享同一上下文。只有这三部分保持连续，系统才能把权限受限的候选知识稳定转化为可消费的回答结果。因此，本节依次说明候选召回、提示词组织与 WebSocket 事件流的具体实现。
+问答链路由检索、生成与隐私治理共同构成。检索需要在单次查询内完成权限过滤与语义重排，生成需要维持多轮上下文边界，隐私治理则贯穿检索、外发与日志节点。以下各节依次展开。
+
+\subsection{模型 Provider 抽象实现}
+
+Provider 抽象的目标是隔离上层业务编排与厂商请求格式。系统将聊天模型与向量模型分别抽象为 \texttt{ChatModelClient} 和 \texttt{EmbeddingModelClient}，上层服务只依赖接口，不直接耦合具体厂商的请求结构。\texttt{AiProperties} 通过 \texttt{ai.providers.chat} 与 \texttt{ai.providers.embedding} 指定当前启用的 Provider；\texttt{AiModelProviderConfig} 则提供 \texttt{embeddingBatchExecutor} 线程池，以支撑向量批处理并行执行。
+
+该边界约束将模型替换的影响范围收敛至 Provider 实现类与配置文件；接入新的对话模型或私有化向量服务时，会话调度、混合检索与异步入库逻辑均无需改动。
 
 \subsection{混合检索实现}
 
-系统的混合检索由 \texttt{HybridSearchService} 实现，其实现重点不在于机械叠加多种检索手段，而在于把召回、权限与排序压缩到一次 Elasticsearch 查询中。这样可以尽量减少候选结果在应用层的多次搬运与重复过滤。
+混合检索把权限过滤、向量召回和词法重排收敛到同一请求中，同时将在线时延控制在可接受范围内。\texttt{HybridSearchService} 支持 \texttt{BM25\_ONLY}、\texttt{DENSE\_ONLY}、\texttt{HYBRID\_NO\_RESCORE} 和 \texttt{FULL\_HYBRID} 四种模式，系统默认使用 \texttt{FULL\_HYBRID}。检索入口先计算用户的有效组织标签，再执行对应的召回策略。
 
-服务首先根据用户身份获取有效组织标签集合，再调用嵌入接口为当前问题生成查询向量。如果向量生成失败，系统会直接降级到纯文本检索路径；若向量生成成功，则在同一次 Elasticsearch 请求中完成 kNN 召回、权限过滤与 \texttt{rescore} 二阶段重排序。相应查询构造如下。
-
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=混合检索与权限过滤,
- language=Java
-]
-int recallK = topK * 30;
-
-s.knn(kn -> kn
-        .field("vector")
-        .queryVector(queryVector)
-        .k(recallK)
-        .numCandidates(recallK)
-);
-
-s.query(q -> q.bool(b -> b
-        .must(m -> m.match(ma -> ma.field("textContent").query(query)))
-        .filter(f -> f.bool(bf -> bf
-                .should(s1 -> s1.term(t -> t.field("userId").value(userDbId)))
-                .should(s2 -> s2.term(t -> t.field("public").value(true)))
-                .should(s3 -> /* org tag filter */ s3)
-        ))
-));
-
-s.rescore(r -> r
-        .windowSize(recallK)
-        .query(rq -> rq
-                .queryWeight(0.2d)
-                .rescoreQueryWeight(1.0d)
-                .query(rqq -> rqq.match(m -> m
-                        .field("textContent")
-                        .query(query)
-                        .operator(Operator.And)
-                ))
-        )
-);
-\end{lstlisting}
-
-该实现的特点有两点：一是权限过滤在候选召回阶段就已经参与执行，而不是在结果返回后再二次裁剪；二是文本重排序直接利用 Elasticsearch 提供的 \texttt{rescore} 机制完成，不需要在应用层手工维护额外排序器。
-
-\subsection{会话状态与提示词编排实现}
-
-在问答链路中，\texttt{ChatHandler} 负责管理对话状态。系统首先在 Redis 中读取或创建用户当前会话标识，再读取该会话对应的历史消息列表；随后使用检索结果构造来源上下文，并把它们与系统规则一起送入 \texttt{DeepSeekClient}。
-
-为了控制上下文规模，系统会将历史消息数量限制在最近 20 条以内，避免会话无限增长后挤占有效证据片段。其关键逻辑如下。
+在 \texttt{FULL\_HYBRID} 模式下，单次 Elasticsearch 请求同时执行 kNN 向量召回与 BM25 文本匹配，两路结果在同一候选窗口内经 \texttt{rescore} 完成语义重排，取排名前 \textit{k} 条作为问答上下文（代码见下）。单次请求避免了两阶段检索的额外网络往返，权限过滤也可在 \texttt{filter} 子句中前置执行。对于多轮追问场景，\texttt{ChatHandler} 还可调用限定文档范围的检索接口，将候选集收缩到当前工作记忆中的活动文档集合。
 
 \begin{lstlisting}[
  numbers=left,
  basicstyle=\ttfamily,
  breaklines=true,
  keywordstyle=\color{SeaGreen4},
- caption=会话历史读取与上下文构建,
+ caption=混合检索查询构造与权限过滤,
  language=Java
 ]
-String conversationId = getOrCreateConversationId(userId);
-List<Map<String, String>> history = getConversationHistory(conversationId);
-List<SearchResult> searchResults =
-        searchService.searchWithPermission(userMessage, userId, 5);
-String context = buildContext(searchResults, session.getId());
+boolean numericHeavy = RetrievalTextNormalizer.containsNumericSignal(query);
+Query lexicalQuery = buildLexicalQuery(query, Operator.Or, numericHeavy, false);
+Query rescoreQuery = buildLexicalQuery(query, Operator.And, numericHeavy, true);
+int recallK = resolveRecallWindow(topK);
+s.knn(kn -> kn.field("vector").queryVector(queryVector)
+        .k(recallK).numCandidates(recallK).filter(scopeFilter));
+s.query(q -> q.bool(b -> b.must(lexicalQuery).filter(scopeFilter)));
+applyRescore(s, rescoreQuery, recallK);
 \end{lstlisting}
 
-由于会话标识、历史消息和检索结果都在服务端显式组织，前端不需要自行拼接模型输入，这使对话状态能够与权限检索结果保持一致，也降低了客户端状态漂移的风险。
+权限过滤在召回阶段前置执行，其作用域由“用户本人上传”“公开资源”与“用户有效组织标签范围”共同构成。该实现对应需求 R3，候选结果无需再在应用层进行事后裁剪。
 
-在 \texttt{DeepSeekClient} 中，系统将检索结果包装在统一的引用定界符之间，并将“仅依据参考资料作答、无结果时明确说明”等规则写入系统指令。该设计保证了模型回答尽可能受检索证据约束，对应装配过程如下。
+系统通过 \texttt{ai.retrieval.*} 统一配置候选窗口、重排窗口和查询权重。对于短关键词查询，系统先执行 BM25 检索；若 Top-1 得分高于 \texttt{ai.retrieval.bm25-shortcut-score-threshold} 且与第二名的分差超过 \texttt{ai.retrieval.bm25-shortcut-gap-threshold}，则直接返回结果，跳过向量化步骤。对于数字密集型问题，\texttt{buildLexicalQuery} 会同时查询原始文本字段与 \texttt{normalizedTextContent} 字段，并提高归一化字段的匹配权重，使金额、比例和万/亿单位等表达在检索阶段保持稳定匹配。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=提示词装配逻辑,
- language=Java
-]
-StringBuilder sysBuilder = new StringBuilder();
-sysBuilder.append(promptCfg.getRules()).append("\n\n");
-sysBuilder.append(refStart).append("\n");
+检索链路出现异常时，系统按预设优先级依次降级：向量召回或重排不可用时退化为纯 BM25；文本检索亦不可用时直接返回无证据状态并终止本轮生成，避免在缺少证据支撑时继续输出。
 
-if (context != null && !context.isEmpty()) {
-    sysBuilder.append(context);
-} else {
-    sysBuilder.append(promptCfg.getNoResultText()).append("\n");
-}
+\subsection{Prompt 工程实现}
 
-sysBuilder.append(refEnd);
-messages.add(Map.of("role", "system", "content", sysBuilder.toString()));
-\end{lstlisting}
+Prompt 需要同时承载规则、历史与证据等异质输入。直接拼接为单一文本时，模型容易混淆指令层与上下文层。\texttt{ChatPromptAssembler} 因而将输入结构划分为若干具名层次：指令组包含回答规则、会话策略、记忆策略与隐私策略；上下文组包含轮次摘要与工作记忆摘要；证据组包含授权检索证据。各层的阈值、规则文案与占位文本由 \texttt{AiProperties} 集中管理，使 Prompt 结构在不同轮次和场景下保持稳定。
 
-\subsection{WebSocket 流式交互实现}
+证据组为空时，装配器写入固定的占位文本，使有证据和无证据两种情形下的输入结构保持一致，减少模型行为波动。\texttt{DeepSeekClient} 只负责请求构造与流式回调，不承担 Prompt 规则维护职责。
 
-前端聊天模块通过 \texttt{@vueuse/core} 提供的 \texttt{useWebSocket} 建立长连接，并在连接建立后接收后端返回的 \texttt{sessionId}。后端在 \texttt{ChatWebSocketHandler} 中解析 JWT、识别用户，再将普通文本消息转交给 \texttt{ChatHandler} 处理。
+\subsection{会话轮次路由与工作记忆实现}
 
-因此，聊天状态流并不是单向文本回传，而是包含连接建立、消息发送、增量内容推送、完成通知和引用映射清理等一组连续事件。前端会话状态维护逻辑如下。
+多轮问答中，\texttt{ChatHandler} 在每轮开始时从 Redis 读取历史与工作记忆，再由 \texttt{ConversationTurnAnalyzer} 完成轮次分类。分析器输出四个判定维度：是否启动检索、是否继承历史上下文、是否限定文档范围，以及是否返回澄清提示，各维度的结果共同决定后续链路的执行路径。
 
-\begin{lstlisting}[
- numbers=left,
- basicstyle=\ttfamily,
- breaklines=true,
- keywordstyle=\color{SeaGreen4},
- caption=前端 WebSocket 会话状态维护,
- language=Java
-]
-const { data: wsData, send: wsSend } =
-  useWebSocket(`/proxy-ws/chat/${store.token}`, { autoReconnect: true });
+\texttt{ConversationTurnAnalyzer} 会先识别显式新话题标记，命中后直接归为 \texttt{NEW\_TOPIC}；再识别 \texttt{META} 标记，把“回看历史”“总结前文”之类请求从检索链路中分离出来。若用户显式引用 \texttt{来源\#编号}，系统会把编号映射为文件 MD5，并优先进入限定文档的 \texttt{FOLLOW\_UP} 检索。
 
-watch(wsData, (val) => {
-  if (!val) return;
-  const data = JSON.parse(val);
-  if (data.type === 'connection' && data.sessionId) {
-    sessionId.value = data.sessionId;
-  }
-});
-\end{lstlisting}
+对于短追问，系统会结合短追问信号、上下文依赖型问题模式和活动作用域判断是否需要澄清。当输入看似追问，但工作记忆中缺少活动主题或活动文档时，链路直接返回澄清文案，不继续检索。其余追问场景则依据活动主题、活动主语、活动文档和关键词改写检索查询。
 
-在流式返回过程中，后端将模型增量内容包装为 \texttt{\{"chunk": "..."\}} 的 JSON 消息逐段发送给前端，并在回答结束时再发送完成通知。与此同时，系统维护“引用编号到文件 MD5”的映射关系，为后续来源定位和下载操作提供依据，至此形成从权限检索、上下文组织到流式问答输出的完整闭环实现。
+工作记忆由 \texttt{ConversationMemoryService} 维护，其中保存活动主题、活动主语、最近独立问题、最近答案摘要、活动文档和关键词等结构化信息。
+
+历史注入策略分为 \texttt{SELECTIVE}、\texttt{RAW\_RECENT} 和 \texttt{DISABLED}。\texttt{SELECTIVE} 用于常规追问，从历史轮次中选取与当前问题相关的条目注入；\texttt{RAW\_RECENT} 用于长程回看，保留含有早期锚点的完整历史轮次；\texttt{DISABLED} 用于新话题切换，关闭历史继承。具体选择由 \texttt{ConversationTurnAnalyzer} 的分类结果自动决定。
+
+\subsection{隐私治理实现}
+
+同一文本在索引、外发与日志阶段面临不同的安全风险，隐私治理因此须沿链路分阶段介入。以下分别说明识别接口、分阶段保护策略与高风险拦截的实现。
+
+\subsubsection{识别接口}
+\texttt{SensitiveContentGovernanceService} 采用关键词字典匹配与正则模式识别相结合的方式，覆盖身份证号、手机号、电子邮箱、银行卡号、API Key 等个人信息及企业受限关键词。对每段文本，服务都会生成治理结构，记录脱敏文本、敏感级别、受限标记、外发许可标志与类型摘要，供索引、模型调用和日志处理复用。
+
+\subsubsection{分阶段保护策略}
+文档处理链路中，\texttt{ParseService} 在每个文本块入库前调用 \texttt{protectForIndexing}，同步写入安全文本、归一化文本、敏感级别与类型摘要。对外部模型调用前，系统使用 \texttt{protectForExternalModel} 处理用户问题、检索查询和候选证据；日志阶段只保留 \texttt{protectLogPreview} 生成的安全预览。三类视图的保护范围依次收紧：索引视图保留可检索文本并屏蔽高风险字段；外发视图在此基础上进一步校验 \texttt{externalModelAllowed} 标志，替换受限金额与比例等内容；日志视图则截断为固定长度的最小安全预览。
+
+\subsubsection{高风险请求拦截}
+在线问答链路中，Embedding 输入在外送前先完成治理；\texttt{ChatHandler} 在装配 \texttt{ChatPromptPayload} 时只使用处理后的问题、检索查询和历史文本；\texttt{buildContext} 会把检索证据包装为带 \texttt{sensitivity} 和 \texttt{external\_allowed} 属性的授权上下文片段；模型输出在流式返回前再执行一次结果保护。对于“导出原文”“忽略规则”等高风险请求，系统在模型调用前通过 \texttt{detectBlockedPromptReason} 直接拒答，使拦截逻辑位于链路入口。
+
+\subsection{长连接流式交互实现}
+
+流式交互的核心约束在于：增量内容推送、完成信号判定与引用来源映射须在同一链路中保持时序一致，任一环节的时序偏差都可能导致来源信息丢失或内容截断。前端聊天模块通过 WebSocket 长连接通信协议建立连接，并借助 \texttt{@vueuse/core} 提供的 \texttt{useWebSocket} 完成会话管理；连接建立后接收后端返回的 \texttt{sessionId}，后续消息以会话标识和用户问题作为基本载荷发送到服务端。后端在 \texttt{ChatWebSocketHandler} 中解析 JWT、恢复用户身份，再将文本消息交给 \texttt{ChatHandler}。
+
+流式执行链路依赖会话级状态管理。\texttt{ChatHandler} 通过 \texttt{streamingTurnStates} 保存当前轮次响应状态，以 \texttt{stopFlags} 管理中断标志，以 \texttt{sessionReferenceMappings} 维护引用编号到文件 MD5 的映射；完成超时与停止标志清理则由 \texttt{completionWatcherExecutor} 统一调度，相应参数受 \texttt{ai.streaming.*} 配置约束。流式返回时，模型增量内容被序列化为 \texttt{\{"chunk": "..."\}} 形式的 JSON 消息并逐段推送；当 \texttt{onComplete} 回调触发，或超时 watcher 判定需要强制收尾时，服务端再发送单独的完成通知。回答文本、引用来源与编号映射沿同一路径写入。
+
+会话记录在收到完成信号后一次性落盘，并同步回写工作记忆，以降低高频写入带来的存储压力。客户端若在生成过程中断连，服务端检测到写入异常后立即停止推送并释放连接状态；只有回答文本与来源映射同时完整时，本轮记录才会落盘。
+
+
+本章涉及的四类对象分别服务于解析、向量化、检索与文件状态管理，但其字段命名保持对应关系。例如，\texttt{safeTextContent} 与 \texttt{sensitivityLevel} 从文本块阶段延续到索引与接口层，使安全视图和风险标记在各阶段共享统一的字段语义。基于这组字段设计，文档列表接口可直接返回文件名、组织标签名称、敏感级别、受限状态和敏感类型等信息；会话历史接口也沿用同一套语义组织返回结果。
+
+\section{系统界面展示}
+\label{sec:ui_showcase}
+
+本节仅结合界面截图说明主要页面的可见信息与操作入口。
+
+\subsection{用户组织与个人中心界面}
+
+图~\ref{fig:ui-user-org} 展示用户管理、组织标签管理与个人中心三个页面。三者分别用于维护用户与标签关系、管理组织层级，以及查看当前用户的主标签和已加入组织。
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.84\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{image/chap04/ui/ui_user.png}
+        \caption{用户管理界面}
+        \label{fig:ui-user}
+    \end{subfigure}
+
+    \par\medskip
+    \begin{subfigure}[t]{0.84\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{image/chap04/ui/ui_org.png}
+        \caption{组织标签管理界面}
+        \label{fig:ui-org}
+    \end{subfigure}
+
+    \par\medskip
+    \begin{subfigure}[t]{0.84\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{image/chap04/ui/ui_person.png}
+        \caption{个人中心界面}
+        \label{fig:ui-person}
+    \end{subfigure}
+    \caption{用户、组织与个人中心界面展示}
+    \label{fig:ui-user-org}
+\end{figure}
+
+\subsection{知识库与会话交互界面}
+
+图~\ref{fig:ui-file-session} 展示知识库与文件管理页面，以及在线会话交互页面。前者用于查看文件状态与权限属性，后者用于发起问答并查看带来源编号的回答。
+
+\begin{figure}[H]
+    \centering
+    \begin{subfigure}[t]{0.86\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{image/chap04/ui/ui_file.png}
+        \caption{知识库与文件管理界面}
+        \label{fig:ui-file}
+    \end{subfigure}
+
+    \par\medskip
+    \begin{subfigure}[t]{0.86\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{image/chap04/ui/ui_session.png}
+        \caption{会话交互界面}
+        \label{fig:ui-session}
+    \end{subfigure}
+    \caption{知识库与会话交互界面展示}
+    \label{fig:ui-file-session}
+\end{figure}
+
+\clearpage
+\subsection{历史记录与结果追溯界面}
+
+图~\ref{fig:ui-history} 展示历史记录与结果追溯界面。页头提供用户和时间范围筛选，主体区域按与在线会话一致的样式回放问答内容，便于核对历史回答及其来源编号。
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{image/chap04/ui/ui_history.png}
+    \caption{历史记录与结果追溯界面展示}
+    \label{fig:ui-history}
+\end{figure}

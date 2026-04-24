@@ -1,47 +1,45 @@
 \chapter{系统设计}
 \label{cha:design}
+\label{cha:system_design}
 
 \section{设计目标与总体思路}
 \label{sec:design_goal}
 
-系统设计需要同时满足三类目标：一是保证企业私有知识在检索与问答过程中受到权限约束；二是保证文档从上传到知识可检索之间的处理链路清晰、可恢复、可扩展；三是保证最终用户能够以较低学习成本完成上传、检索和对话操作。
+企业私有文档知识服务同时面对三类工程压力：长文档接入后的持续处理、多租户场景下的权限约束，以及外部模型供应商可能发生的变更。三类压力叠加在同一同步请求链路上时，问题会相互放大：长文档解析与向量化一旦占用请求线程，在线响应延迟便随并发规模显著上升；权限判定与模型接入若与业务流程写死，则模型替换或权限规则调整时改动范围难以控制。
 
-围绕上述目标，本文采用前后端分离、分层解耦和异步处理相结合的设计思路，将系统划分为表现层、接口与安全层、业务服务层以及数据与外部依赖层。该分层并非形式化拆分，而是为了在权限控制、长链路任务处理和交互响应之间建立清晰的职责边界。
+针对上述压力，本系统须回答三项具体问题：文档解析与向量化耗时不可预期，处理链路须从交互请求中脱离，进入可追踪的后台异步流程；权限判定须在检索与生成之前完成，使授权边界在候选召回、上下文装配和回答返回三个阶段保持一致；模型替换路径须局限在专用访问层，使问答编排与入库逻辑不随厂商变动而调整。
 
-在设计过程中，本文遵循几项彼此关联的原则，以保证架构描述、实现代码与系统边界保持一致。
-\begin{enumerate}
-    \item 权限语义必须先于具体功能建立，使文档上传、文件列表、检索召回、下载预览和问答生成等关键路径共享同一访问边界。
-    \item 对于上传、解析、向量生成和索引写入等长链路任务，系统通过对象存储与消息队列降低耦合度，避免单个请求承担全部计算压力。
-    \item 问答场景采用流式输出，上传场景保留分片续传与进度反馈，使用户能够持续感知任务状态。
-\end{enumerate}
+针对上述问题，系统在三个层面设置隔离边界：文档接入按“上传确认—异步调度—后台处理”组织，将长任务移出在线请求路径；权限过滤在候选召回之前执行，授权边界直接内嵌于检索阶段，而非在结果生成后再做后置裁剪；聊天生成与向量化均经由抽象提供者接口（Provider）访问，模型切换仅影响接口实现层。
+
+图 \ref{fig:design-overview} 给出了文档入库与检索问答两条主处理链路。
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.88\textwidth]{image/chap03/design-overview.png}
+    \caption{系统主处理链路示意图}
+    \label{fig:design-overview}
+\end{figure}
 
 \section{总体架构设计}
 \label{sec:overall_design}
 
-系统总体架构如图 \ref{fig:system-architecture} 所示。前端以知识库页面、聊天页面、组织标签页面和用户管理页面为主要入口；后端以 Spring Boot 应用为核心，负责认证授权、文档处理、检索问答和会话管理。
+系统总体采用前后端分层结构，如图 \ref{fig:system-architecture} 所示。前端划分为知识库管理、聊天问答、组织标签管理和用户管理四个功能模块，负责文档接入、问题发起与结果展示；后端基于 Spring Boot，承担认证授权、文档处理、检索问答与会话管理。
 
-数据层由 MySQL、Redis、MinIO 与 Elasticsearch 共同构成，外部能力则通过大模型接口、嵌入接口和 Kafka 消息中间件接入。多组件协同是系统设计的基本前提：关系型存储负责业务状态，对象存储负责文件实体，搜索引擎负责知识检索，消息队列负责将上传请求与计算密集型处理过程解耦。
+持久化相关能力由 MySQL、MinIO 与 Elasticsearch 共同承担：MySQL 保存用户、组织标签与文件元数据，MinIO 存储原始文件对象，Elasticsearch 维护全文与向量检索索引。运行时支撑层由 Redis 与 Kafka 组成，前者缓存上传状态和会话信息，后者把文档接入链路与后台入库链路解耦，避免长任务滞留在交互路径中。模型层则以聊天 Provider 和向量 Provider 两个抽象对接外部模型，使上层业务不直接依赖具体厂商实现。
 
-\begin{figure}[H]
+
+\begin{figure}[!htbp]
     \centering
-    \includegraphics[width=0.82\textwidth]{image/chap03/structure.png}
+    \includegraphics[width=0.74\textwidth]{image/chap03/structure.png}
     \caption{系统总体架构图}
     \label{fig:system-architecture}
 \end{figure}
 
-表现层由 Vue 3、TypeScript 与 Vite 组成，负责文件上传、文件列表管理、知识检索、聊天问答、用户信息展示和组织标签维护等界面交互。
-
-接口与安全层由 RESTful API、WebSocket 通道以及 Spring Security 相关过滤器构成，主要承担请求接入、身份识别和组织授权。
-
-业务服务层围绕用户管理、文档上传、文档解析、向量化、混合检索、会话管理和文件服务展开，负责实现核心业务逻辑。
-
-数据与外部依赖层则由 MySQL、Redis、MinIO、Elasticsearch、DeepSeek 接口和 Kafka 共同组成，对应状态持久化、对象存储、知识检索、模型调用和异步解耦等职责。
-
 \subsection{技术选型}
 
-表 \ref{tab:tech-stack} 汇总了本系统的核心技术组件及其选择原因。
+表 \ref{tab:tech-stack} 列出核心技术组件及各组件的选型依据。
 
-\begin{table}[H]
+\begin{table}[!htbp]
     \centering
     \caption{核心技术选型}
     \label{tab:tech-stack}
@@ -50,14 +48,14 @@
         \toprule
         层次 & 技术组件 & 选择原因 \\
         \midrule
-        前端框架 & \makecell[l]{Vue 3、\\TypeScript、Vite} & Vue 3 采用组件化开发方式，适合构建知识库、问答与管理页面等多视图交互界面；TypeScript 有助于约束前后端接口数据结构，降低维护成本；Vite 在开发阶段启动快、热更新响应及时，适合需要频繁迭代的前端工程。 \\
-        后端框架 & \makecell[l]{Spring Boot 3.4.2、\\Java 17} & Spring Boot 生态成熟，便于统一组织接口层、服务层和配置管理；Java 17 作为长期支持版本，兼顾稳定性、性能与工程可维护性，适合承载企业知识系统的核心业务逻辑。 \\
-        安全机制 & \makecell[l]{Spring Security、\\JWT} & Spring Security 提供完整的过滤器链与授权扩展能力，便于把角色和组织标签约束整合到统一认证流程中；JWT 适合前后端分离场景下的无状态认证，能够减少服务端会话管理负担。 \\
-        文件存储 & MinIO & MinIO 兼容 S3 接口，便于实现分片上传、对象合并和预签名访问；同时其私有化部署成本较低，更符合企业内部文档系统对数据可控性的要求。 \\
-        数据存储 & \makecell[l]{MySQL、Redis、\\Elasticsearch} & MySQL 适合保存用户、组织标签和文件元数据等结构化信息；Redis 读写延迟低，适合缓存上传状态和会话数据；Elasticsearch 同时支持全文检索与向量检索，适合构建权限约束下的混合检索能力。 \\
-        异步处理 & Kafka & 文件解析、切分和向量化属于耗时较长的后台任务，Kafka 能够在上传完成后将请求链路与入库链路解耦，并通过消息缓冲提高系统在高并发场景下的稳定性。 \\
-        文档处理 & Apache Tika、HanLP & Apache Tika 支持多种文档格式的统一文本提取，能够减少不同文件类型的解析差异；HanLP 对中文分词和长句切分支持较好，适合后续语义切分与检索片段构建。 \\
-        模型调用 & \makecell[l]{DeepSeek API、\\Embedding API} & 系统需要同时具备文本生成与向量表示能力，因此分别选用对话模型接口和嵌入接口；该组合便于将生成链路与检索链路分开设计，也更利于后续模型替换与能力扩展。 \\
+        前端框架 & \makecell[l]{Vue 3、\\TypeScript、Vite} & Vue 3 的单文件组件与响应式系统支持在知识库、聊天和用户管理等多视图间共享状态；相较于 React，其学习曲线更平缓，有助于快速构建业务原型；TypeScript 用于约束接口数据结构；Vite 启动快、热更新及时，能够缩短前后端联调周期。 \\
+        后端框架 & \makecell[l]{Spring Boot 3.4.2、\\Java 17} & Spring Boot 3.x 的自动配置与条件注入减少了样板代码，有利于统一组织接口层、服务层和配置管理；Spring Security 的过滤器链可直接承载本系统多维权限的统一拦截需求，无需另起鉴权框架；Java 17 作为 LTS 版本，同时提供记录类型和密封类等语言特性，用于承载核心业务逻辑。 \\
+        安全机制 & \makecell[l]{Spring Security、\\JWT} & Spring Security 提供完整的过滤器链与授权扩展能力，能够将角色与组织标签约束整合到统一认证流程中；JWT 满足前后端分离场景下的无状态认证需求。 \\
+        文件存储 & MinIO & MinIO 兼容 S3 接口，支持分片上传、对象合并和预签名访问；其私有化部署成本较低，满足企业对数据自主可控的要求。 \\
+        数据存储 & \makecell[l]{MySQL、Redis、\\Elasticsearch} & MySQL 保存结构化业务数据；Redis 读写延迟低，用于缓存上传状态和会话数据；Elasticsearch 同时支持全文检索与向量检索，可承载权限约束下的混合检索。 \\
+        异步处理 & Kafka & 文件解析、切分和向量化属于耗时较长的后台任务，Kafka 能够在文档接入完成后将请求链路与入库链路解耦，并通过消息缓冲提高系统在高并发场景下的稳定性。 \\
+        文档处理 & Apache Tika、HanLP & Apache Tika 支持多种文档格式的统一文本提取，可减少不同文件类型的解析差异；HanLP 对中文分词和长句切分支持较好，可用于后续语义切分与检索片段构建。 \\
+        模型接入 & \makecell[l]{Chat Provider、\\Embedding Provider、\\DeepSeek、DashScope\\Embedding} & 聊天生成与向量化特征不同，因此通过 Provider 抽象统一模型调用；当前版本以 DeepSeek 负责生成、DashScope Embedding 负责向量化，前者中文支持较好且成本较低，后者向量表示稳定。 \\
         \bottomrule
     \end{tabular}
     }
@@ -66,27 +64,43 @@
 \section{核心模块设计}
 \label{sec:core_design}
 
-在总体架构确定之后，选取权限控制、文档入库、混合检索和对话编排四条直接影响系统行为的主链路展开设计说明。
+本节针对系统中最容易产生耦合或越权风险的三类边界展开设计说明：模型调用层的替换边界、权限与隐私的过滤边界，以及从文档入库到回答生成的主业务链路。
+
+\subsection{模型 Provider 解耦设计}
+\label{sec:model_provider_design}
+
+本系统同时接入问答生成与向量化能力，二者在请求协议、吞吐特征与失败处理上存在显著差异；企业部署中，模型供应商还可能因成本与合规要求调整而变更。若上层业务直接耦合厂商接口，模型切换将导致问答编排、检索服务与文档入库链路同步改动，使后续模型替换和成本调整的代价显著上升。
+
+RAGLab 强调 RAG 框架的模块化组织与研究透明性\cite{zhang2024raglab}；FlexRAG 通过统一配置管理和模块化装配支持灵活组合\cite{zhang2025flexrag}；RAGVA 则从工程实践角度讨论了 RAG 应用在构建、评测与维护中的挑战\cite{vogelsang2025ragva}。这些工作说明，RAG 系统的模块化组织和组件可替换性具有工程意义，可为本文隔离模型访问层提供参考；而 \texttt{ChatProvider} 与 \texttt{EmbeddingProvider} 的进一步拆分主要来自本系统自身的调用约束：生成调用以流式输出为主、对延迟更敏感，向量化调用以批量提交为主、对吞吐量要求更高，因此二者分别封装为独立的访问接口。
+
+系统在业务层与模型调用层之间引入 \texttt{ChatProvider} 与 \texttt{EmbeddingProvider} 两个抽象接口，业务代码依赖接口而非具体实现，厂商适配逻辑集中在接口实现类中。会话编排层只消费流式生成、完成回调与模型标识等统一能力；向量化链路只依赖批量文本向量化接口。替换模型实现时，改动范围限定在对应的 Provider 实现类，问答编排与入库链路无需同步修改；缓存、批量处理等优化也可以在模型访问层内独立扩展，不影响上层业务逻辑。
 
 \subsection{权限模型与多租户隔离设计}
 \label{sec:permission_design}
 
-系统的权限模型不是单纯的角色控制，而是由“角色、主组织标签、组织标签集合、文档公开性、文档归属者”共同决定。管理员可以访问和维护系统内全部资源。每个用户在注册时都会自动生成一个私人组织标签，并以此构建个人私有空间。普通用户可以访问自己上传的文档、公开文档以及组织标签匹配的共享文档。对于检索和文件列表查询，系统还需要根据组织标签层级展开用户的有效标签集合，以允许用户访问父级组织范围内的共享文档。
+企业文档访问需同时满足角色、组织归属与文档属性约束\cite{sandhu2000nist}。标准 RBAC 只以角色为判定依据；本系统在此基础上引入组织标签维度，使同一角色的用户仍可按组织归属细分访问范围。系统在用户侧保存角色、主组织标签与有效组织标签集合三项字段，在文档侧保存归属者与公开属性两项字段。主组织标签用于确定当前操作上下文与基础校验入口；文档的实际可见范围由有效组织标签集合展开后与文档归属者、公开属性共同判定。文档级可见性规则可写为：当 $\texttt{role}=\texttt{ADMIN}$ 时，用户可访问全部文档；当 $\texttt{role}=\texttt{USER}$ 时，其可见集合为
+\[
+\begin{aligned}
+V(u)=&\{d \mid d.\texttt{owner}=u\}\cup\{d \mid d.\texttt{isPublic}=\texttt{true}\}\\
+&\cup\{d \mid d.\texttt{orgTag}\in EffectiveTags(u)\}.
+\end{aligned}
+\]
+其中，\texttt{EffectiveTags(u)} 表示用户在组织继承规则展开后的有效标签集合。为支持父级组织共享，系统需依据组织标签的父子关系与共享规则计算该集合；例如，用户属于“研发部-后端组”时，若“研发部”被标记为可继承，则其有效标签集合包含“后端组”与“研发部”两个标签。
 
-权限映射关系如图 \ref{fig:permission-mapping} 所示。该设计的关键不在于“是否有某个角色”，而在于如何将用户身份信息映射为后续数据访问阶段可直接使用的过滤条件。角色只是权限计算的起点；真正进入检索与文件服务阶段时，起作用的是用户可见组织范围、文档归属关系与公开属性的组合结果。
+图 \ref{fig:permission-mapping} 展示该映射关系。登录态仅提供身份验证，检索与文件服务阶段的过滤条件由可见组织范围、文档归属与公开属性共同构成。
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.72\textwidth]{image/chap03/org.png}
+    \includegraphics[width=0.84\textwidth]{image/chap03/org.png}
     \caption{权限映射关系图}
     \label{fig:permission-mapping}
 \end{figure}
 
-当用户发起文件访问或检索请求时，系统按图 \ref{fig:permission-decision} 的逻辑完成权限判断。代码中资源级过滤器以快速拦截为主，检索服务和文件列表服务则结合缓存服务计算用户有效标签集合，并完成更完整的层级权限展开，两者共同构成系统的多租户隔离机制。
+文件访问和检索请求在进入具体业务处理前即触发权限判定，具体流程见图 \ref{fig:permission-decision}。认证过滤链首先校验登录态、角色与主组织，快速拦截无效请求。通过基础校验后，检索服务与文件服务结合缓存中的有效组织标签集合生成过滤条件，并与文档归属者、公开属性共同限制候选集。
 
-\begin{figure}[H]
+\begin{figure}[!htbp]
     \centering
-    \includegraphics[width=0.95\textwidth]{image/chap03/acc.png}
+    \includegraphics[width=0.92\textwidth,height=0.48\textheight,keepaspectratio]{image/chap03/fig3-4-permission-decision-flow.pdf}
     \caption{权限判定与数据隔离流程图}
     \label{fig:permission-decision}
 \end{figure}
@@ -94,13 +108,17 @@
 \subsection{文档接入与知识入库链路设计}
 \label{sec:document_pipeline_design}
 
-文档接入链路是连接“原始文件”与“知识索引”的关键桥梁。如图~\ref{fig:document-pipeline}所示，系统先在前端对待上传文件执行 MD5 计算并按固定粒度切分，再逐片提交上传请求。后端接收分片后，在 MySQL 中维护文件记录，在 Redis 中维护分片位图，并将分片对象写入 MinIO。
+文档接入链路将原始上传文件转换为可检索知识，整体流程见图~\ref{fig:document-pipeline}。文件在完成传输确认后进入后台处理阶段，随后依次完成文本解析、语义切分、向量化与索引写入。下文将对象传输阶段的 chunk 称为“分片”，将解析与索引阶段的语义单元称为“分块”，以区分文件传输与文本切分两类处理过程。
 
-全部分片上传完成后，服务端依据文件 MD5 对应的分片列表完成对象合并并写回文件状态。随后，控制器将文件处理任务发送至 Kafka，由消费者在后台执行文档解析与向量化。解析服务负责将文本切分结果写入关系型存储，向量化服务再将文本分块与向量写入 Elasticsearch 知识索引。由此，文件从“已上传”转化为“可检索知识”的过程被明确拆分为传输、状态确认、后台处理和索引写入四个阶段。
+在处理路径的选择上，系统以文件大小为依据区分直通路径与异步路径：小文件在单次请求内完成合并与解析，无需经过队列；超过 1 MB 的文件进入“上传确认—异步调度—后台处理”流水线，将长任务与在线请求路径隔离。
 
-该链路的设计重点是将“上传可靠性”和“入库吞吐量”分开考虑。文件上传阶段更关注状态恢复和数据完整性，后台解析与向量化阶段则更强调计算密集任务的异步化处理。如果将两类职责压缩进单次请求，系统会同时承担传输、解析与索引写入压力，既不利于错误恢复，也不利于后续扩展。
+无论进入哪条路径，文件在传输确认后都按统一的入库顺序处理：先解析原始内容，再执行语义切分、向量化和检索索引写入。上传阶段记录文件摘要、分片确认状态与合并结果；后台阶段在解析、向量化与索引写入之间保留可恢复的阶段状态，以便任务失败后从最近完成步骤继续处理。
 
-\begin{figure}[H]
+解析阶段除提取原始文本外，还同步构建安全文本与归一化文本视图。切分策略以段落为基本语义单元：识别为表格段时按行组合切分，保留行内字段关系；普通段落超过 512 字符时依句子边界继续拆分；若单句仍超过上限，则借助 HanLP 分词进一步切分，确保分块长度始终落在向量化预算范围内。
+
+分块上限设为 512 字符。目标语料以企业公告类文本为主，大多数自然段在该范围内仍可保持完整；同时，这一长度也能够把单次嵌入调用控制在当前部署模型的输入预算之内。由于段落、句子与表格行已提供显式语义边界，系统不设置固定字符重叠，以避免重复片段扩大索引规模并干扰后续重排序的评分稳定性。
+
+\begin{figure}[!htbp]
     \centering
     \includegraphics[width=0.98\textwidth]{image/chap03/text.png}
     \caption{文档处理全生命周期设计图}
@@ -110,70 +128,146 @@
 \subsection{混合检索设计}
 \label{sec:retrieval_design}
 
-为兼顾企业文档场景中的术语匹配能力与语义泛化能力，系统采用“语义召回+文本重排+权限过滤”的混合检索设计。这里的出发点是希望在专业文档场景中同时保留语义相近性判断与术语精确定位能力。因为单一检索路径在不同任务中容易出现召回偏移，检索效果还会受到候选组织方式与后续编排方式的共同影响\cite{rahman2025comparative}。因此，企业知识场景中的检索设计不能只追求“语义上相似”，还必须考虑候选结果是否便于后续验证与生成使用。
+企业专业文档术语密集、语义边界模糊：纯向量检索在细粒度术语匹配上易出现偏移，纯关键词检索又难以覆盖同义表述。RAG 与 DPR 分别说明了稠密表示在检索增强问答和语义召回中的有效性\cite{lewis2020rag,karpukhin2020dpr}，但这类方法并不天然擅长处理术语、编号和金额等精确匹配问题；面向工程场景的对比研究进一步表明，将词法匹配叠加在稠密召回之后通常优于单一路径\cite{rahman2025comparative}。基于这一权衡，系统采用“权限前置过滤 + 向量候选召回 + 词法重排”的混合检索策略。
 
-为此，系统进行两阶段混合检索设计。在第一阶段使用嵌入模型将用户问题转换为查询向量，并执行 kNN 召回；与此同时，将用户身份、公开属性和组织标签约束作为过滤条件一并注入查询，避免未授权文档进入候选集。在第二阶段，系统对候选结果执行文本匹配重排序，使包含关键术语、编号或精确表述的片段获得更高优先级。权限过滤被放置在召回阶段共同执行，而不是放到结果返回后再处理，从而保证检索执行过程中的事实一致性、结果可核对性和安全边界。
+该流程分为两个阶段。第一阶段生成查询向量并执行 k近邻（k-nearest neighbors, kNN）召回，同时将用户身份、公开属性和组织标签作为过滤条件注入查询。第二阶段在候选窗口内叠加 BM25 文本匹配\cite{robertson2009bm25}，并利用 Elasticsearch 的 \texttt{rescore} 机制完成词法重排，以提升术语、编号与精确表述的排序稳定性。当前默认链路选择两阶段结构而不额外引入独立排序阶段，原因在于单节点部署下需要同时控制在线时延和实现复杂度。第~\ref{cha:system_test}~章将通过正式评测与消融实验验证这一取舍下的检索效果与响应时延。
 
-混合检索与安全过滤的总体流程如图~\ref{fig:hybrid-retrieval-design}所示。
+为提升数字、金额、百分比及“万/亿”等表达的匹配稳定性，检索侧维护归一化文本视图，统一转换数值与单位，如“1万”转换为“10000”，“1亿”转换为“100000000”，“50\%”转换为“0.5”，使词法检索能够在更稳定的文本表示上执行。
 
-\begin{figure}[H]
+在当前部署中，问答上下文默认取 Top-5，以控制送入生成模型的上下文长度。向量候选窗口按 30 倍放大，对应召回窗口为 150，用于在权限过滤后保留足够候选；\texttt{rescore} 窗口上限设为 75，用于给词法重排保留必要空间，同时限制在线开销。
+
+图~\ref{fig:hybrid-retrieval-design} 给出混合检索与安全过滤的总体流程。
+
+\begin{figure}[!htbp]
     \centering
-    \includegraphics[width=0.78\textwidth]{image/chap03/retrive.png}
+    \includegraphics[width=0.90\textwidth]{image/chap03/retrieve.png}
     \caption{混合检索与安全过滤设计图}
     \label{fig:hybrid-retrieval-design}
 \end{figure}
 
-\subsection{对话编排与生成设计}
+\subsection{Prompt 工程设计}
+\label{sec:prompt_design}
+
+Prompt 的结构化设计决定了检索证据、会话状态与约束规则如何注入模型，进而影响模型是否能够按预期利用上下文中的授权信息生成回答。
+
+为避免系统指令、历史摘要与检索证据在同一上下文中相互干扰，Prompt 被设计为结构化载体，由统一装配器按固定逻辑槽位拼装。规则文案、会话策略、历史策略与隐私策略均外置为配置项，以便在不同部署环境下分别调整回答规则、历史注入方式与隐私约束。表 \ref{tab:prompt-layer-design} 展示其分层装配结构。
+\begin{table}[!htbp]
+    \centering
+    \caption{Prompt 分层装配结构设计}
+    \label{tab:prompt-layer-design}
+    {\footnotesize
+    \begin{tabularx}{\textwidth}{L{2.8cm}L{4.0cm}Y}
+        \toprule
+        逻辑层 & 主要内容 & 作用说明 \\
+        \midrule
+        \makecell[l]{\texttt{assistant\_}\\\texttt{rules}} & 回答语言、输出结构、来源引用格式、拒答规则 & 约束回答风格与引用格式 \\
+        \makecell[l]{\texttt{conversation\_}\\\texttt{policy}} & 新话题切换、追问承接、全局回退条件、历史上限 & 限定历史承接与检索边界 \\
+        \makecell[l]{\texttt{memory\_}\\\texttt{policy}} & 历史注入策略、工作记忆规则、冲突处理原则 & 控制历史注入方式与冲突处理 \\
+        \makecell[l]{\texttt{privacy\_}\\\texttt{policy}} & 敏感信息治理规则、外送约束、高风险拒答规则 & 保证 Prompt 与隐私治理一致 \\
+        \makecell[l]{\texttt{turn\_}\\\texttt{summary}} & 轮次类型、澄清需求、文档范围、检索改写结果 & 显式注入轮次判定结果 \\
+        \makecell[l]{\texttt{memory\_}\\\texttt{summary}} & 当前主题、当前主语、最近独立问题、活跃文档、关键词、答案摘要 & 以摘要形式保留工作记忆 \\
+        \makecell[l]{\texttt{authorized\_}\\\texttt{context}} & 授权检索片段、来源编号、文件标识 & 提供回答证据并支持回溯 \\
+        \bottomrule
+    \end{tabularx}
+    }
+\end{table}
+
+
+
+\subsection{会话状态控制与生成编排设计}
 \label{sec:generation_design}
 
-问答模块以“检索结果受约束的生成”为核心。系统在会话阶段并不直接将用户问题发送给模型，而是先确定当前用户的会话状态，再决定哪些外部证据能够进入生成过程。这样的设计并不是简单把“检索”和“生成”顺序连接起来，而是把提示词组织本身视为知识治理链路的一部分。企业知识管理研究指出，提示编排不仅影响回答形式，也会影响知识在系统中的组织与调用方式\cite{oleary2024km}。因此，在企业场景下，生成阶段同样需要接受上下文边界、来源组织方式和会话连续性的共同约束。
+多轮对话中，追问、话题切换与元问题在检索策略上差异显著；若不加区分地将所有输入直接触发全局检索，短追问中的指代词很容易导致召回语义漂移。为此，系统在生成前先判定当前输入属于哪一类轮次，再决定是否引入历史、是否需要检索改写以及是否应收缩检索范围。轮次划分为 \texttt{NEW\_TOPIC}、\texttt{FOLLOW\_UP}、\texttt{META} 与 \texttt{CLARIFICATION} 四类，判定依据包括显式标记（新话题切换、历史引用）与上下文信号（短追问、长程历史回看、依赖上下文的问题模式）。具体路由关系如表 \ref{tab:turn-routing} 所示。
 
-基于上述约束，系统先从 Redis 读取当前用户会话标识及历史消息，再调用混合检索服务获取带来源编号的候选知识片段。随后，系统将规则、检索结果、历史对话和本轮问题拼接为标准化提示词，最后再调用对话模型接口以流式方式逐段返回生成内容。
-
-在这一编排过程中，本轮问题及历史消息保障问答的连续性。但是回答质量也不能只看流畅性，还需要与风险控制和适用边界同时衡量\cite{liang2023holistic}，因此规则约束用于限制模型偏离检索证据或暴露敏感信息。而来源编号则用于保留可追溯的证据链，因为外部证据约束是提高回答可信度的重要条件\cite{zhang2025hallucination}，特别对于垂直领域知识问答，检索结果的可解释性和可核对性同样重要\cite{tcmstandardrag2025}。
-
-提示词编排与生成流程如图~\ref{fig:generation-design}所示。
-
-\begin{figure}[H]
+\begin{table}[!htbp]
     \centering
-    \includegraphics[width=0.92\textwidth]{image/chap03/generate.png}
-    \caption{提示词编排与生成流程图}
-    \label{fig:generation-design}
+    \caption{轮次类型与后续处理策略}
+    \label{tab:turn-routing}
+    {\footnotesize
+    \begin{tabularx}{\textwidth}{L{3.4cm}L{4.0cm}Y}
+        \toprule
+        轮次类型 & 典型触发特征 & 后续动作 \\
+        \midrule
+        \texttt{NEW\_TOPIC} & 显式新话题切换，或当前问题与既有上下文脱钩 & 重置工作记忆并允许全局检索 \\
+        \texttt{FOLLOW\_UP} & 存在稳定回指对象的追问或延续性补充问题 & 沿用活跃文档集合和关键词收缩检索范围 \\
+        \texttt{CLARIFICATION} & 输入过短且缺少明确实体，且最近历史中不存在稳定回指对象 & 暂停检索，先返回澄清请求 \\
+        \texttt{META} & 询问系统行为、来源说明或会话状态等元问题 & 不触发知识库检索，转入会话控制分支 \\
+        \bottomrule
+    \end{tabularx}
+    }
+\end{table}
+
+工作记忆仅保留多轮承接所需信息：当前主题与当前主语维持话题连续性，并为 \texttt{FOLLOW\_UP} 轮次的指代消解提供锚点；活跃文档集合与关键词在后续追问时收缩检索范围；最近独立问题与上一轮回答摘要则在历史注入时提供轻量上下文，以替代完整原始消息的传入。历史注入支持三种策略：\texttt{SELECTIVE} 从历史摘要中筛选与当前问题强相关的轮次注入，适用于会话较长且话题频繁切换的场景；\texttt{RAW\_RECENT} 保留最近若干轮原始消息，适用于对话较短且上下文连贯的快速追问场景；\texttt{DISABLED} 完全切断历史，适用于独立单轮检索或隐私要求较高的部署配置。第~\ref{cha:system_test}~章将对三种策略的效果进行对照比较。
+
+轮次判断完成后，系统才调用混合检索服务获取候选片段，并把权限过滤后的结果组织为授权证据层，再与规则层、会话策略层、记忆策略层和工作记忆摘要共同装配为模型输入。来源编号随结果保留，用于回答后的证据回指；若轮次决策限定了文档范围或禁止全局回退检索，该约束同步作用于检索阶段。
+
+图~\ref{fig:generation-orchestration-design} 给出会话状态控制与生成编排关系。
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.88\textwidth,height=0.44\textheight,keepaspectratio]{image/chap03/fig3-7-generation-orchestration.pdf}
+    \caption{会话状态控制与生成编排设计图}
+    \label{fig:generation-orchestration-design}
+\end{figure}
+
+\subsection{隐私治理设计}
+\label{sec:privacy_design}
+
+企业私有文档的敏感信息主要沿三条路径外泄：原文在入库阶段进入索引与检索层；未脱敏片段在 Prompt 装配与会话历史中进入模型输入；模型回答则可能在输出层重建敏感内容。结合企业场景下对访问控制与安全测评的要求\cite{gbt22239_2019}，三条路径分别对应接入、传递与生成三个环节，隐私治理须在每个环节独立设置控制点，而非依赖单一出口过滤。
+
+基于风险传播路径，系统将治理对象划分为三类。个人身份信息（如身份证号、手机号）采用正则匹配后的掩码替换。系统凭据（如 API Key、访问令牌）命中后强制清除，不保留可复原片段。企业受限信息在脱敏后还需结合敏感级别判断是否允许外送；受限级别内容可在权限范围内参与内部检索，但不得进入外部 Embedding 计算、Prompt 上下文、长期历史保存和日志记录。
+
+治理流程落在五个操作环节：
+\begin{itemize}
+    \item 识别：在文档解析与问题接收阶段标注敏感类型与级别。
+    \item 脱敏：对命中内容执行掩码替换、占位替换或清除，生成 \texttt{safeText}。
+    \item 标注：将受限标记、外部模型外送许可、敏感级别和敏感类型等元数据写入分块与索引记录。
+    \item 约束：检索服务、Prompt 装配、会话历史与日志记录仅使用治理后内容。
+    \item 复核：模型输出后再次扫描回答中的敏感模式；若命中高风险内容，则对结果执行拦截或再次脱敏。
+\end{itemize}
+
+图~\ref{fig:privacy-governance-chain} 给出了隐私治理在识别、脱敏、标注、外发与结果复核五个环节中的连续控制关系，以及索引视图、外发视图和日志视图三类下游使用分支。
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width=0.84\textwidth,height=0.28\textheight,keepaspectratio]{image/chap03/privacy-governance-chain.pdf}
+    \caption{隐私治理链路图}
+    \label{fig:privacy-governance-chain}
 \end{figure}
 
 \section{数据结构设计}
 \label{sec:data_design}
 
-数据结构设计的作用并不只是给表和字段命名，更重要的是让权限信息、处理状态和检索结果能够在多种存储之间连续传递。考虑到系统同时使用关系型数据库、对象存储与搜索引擎，本节分别说明业务元数据和知识索引的组织方式，以及它们如何共同支撑后续实现。
+本节从关系型存储与知识索引两类数据结构说明权限字段与敏感元数据的存储方式。关系型存储保存用户身份、组织标签与文件接入状态，是权限判定的基础数据源；知识索引在写入时继承分块的权限字段与敏感元数据，使过滤条件可以直接作用于候选召回阶段，而无需二次查询。
 
 \subsection{关系型存储结构}
 
-系统在关系型数据库中主要维护用户、组织标签、文件上传记录、分片记录和文本分块记录。五个实体之间的关系如图 \ref{fig:er-diagram} 所示。
+关系型数据库主要维护用户、组织标签、文档接入记录、分片记录和文本分块记录。五个实体之间的关系见图 \ref{fig:er-diagram}。
 
-\begin{figure}[H]
+\begin{figure}[!htbp]
     \centering
-    \includegraphics[width=0.92\textwidth]{image/chap03/ER.png}
+    \includegraphics[width=0.94\textwidth]{image/chap03/ER.png}
     \caption{系统 E-R 图}
     \label{fig:er-diagram}
 \end{figure}
 
 在实体关系基础上，核心关系表的字段设计及其作用说明如表 \ref{tab:relational-objects} 所示。
 
-\begin{table}[H]
+\begin{table}[!htbp]
     \centering
     \caption{关系型核心存储对象设计}
     \label{tab:relational-objects}
     {\footnotesize
-    \newcommand{\relcell}[1]{\parbox[c][1.3cm][c]{\linewidth}{\raggedright\strut #1\strut}}
+    \newcommand{\relcell}[1]{\parbox[t]{\linewidth}{\raggedright\strut #1\strut}}
     \begin{tabular}{L{2.35cm}L{4.15cm}L{6.2cm}}
         \toprule
         存储对象 & 关键字段 & 作用说明 \\
         \midrule
         \relcell{\texttt{users}} & \relcell{\texttt{id}、\texttt{username}、\texttt{role}、\texttt{org\_tags}、\texttt{primary\_org}} & \relcell{保存用户身份、角色及组织标签信息，是认证授权与界面展示的基础数据} \\
         \relcell{{\scriptsize \texttt{organization}}\\{\scriptsize \texttt{\_tags}}} & \relcell{\texttt{tag\_id}、\texttt{name}、\texttt{parent\_tag}、\texttt{created\_by}} & \relcell{保存组织标签及其层级关系，为组织共享范围和有效标签展开提供依据} \\
-        \relcell{\texttt{file\_}\\\texttt{upload}} & \relcell{\texttt{file\_md5}、\texttt{fileName}、\texttt{user\_id}、\texttt{org\_tag}、\texttt{is\_public}、\texttt{status}} & \relcell{保存文件级元数据、归属关系与上传状态，是文件服务与权限校验的入口对象} \\
-        \relcell{\texttt{chunk\_}\\\texttt{info}} & \relcell{\texttt{fileMd5}、\texttt{chunkIndex}、\texttt{chunkMd5}、\texttt{storagePath}} & \relcell{记录上传分片信息，支撑断点续传和服务端对象合并} \\
-        \relcell{\texttt{document\_}\\\texttt{vectors}} & \relcell{\texttt{vectorId}、\texttt{fileMd5}、\texttt{chunkId}、\texttt{textContent}、\texttt{user\_id}、\texttt{org\_tag}} & \relcell{保存解析后的文本分块及其权限元数据，作为向量化写入前的中间结果} \\
+        \relcell{\texttt{file\_}\\\texttt{upload}} & \relcell{\texttt{file\_md5}、\texttt{file\_name}、\texttt{user\_id}\\\texttt{org\_tag}、\texttt{is\_public}、\texttt{status}\\\texttt{sensitivity\_level}、\texttt{sensitive\_types}} & \relcell{保存文件名称、归属、公开属性、接入状态与文件级敏感摘要，是文件服务与权限校验的入口对象} \\
+        \relcell{\texttt{chunk\_}\\\texttt{info}} & \relcell{\texttt{file\_md5}、\texttt{chunk\_index}、\texttt{chunk\_md5}、\texttt{storage\_path}} & \relcell{记录分片信息，支撑断点续传和服务端对象合并} \\
+        \relcell{\texttt{document\_}\\\texttt{vectors}} & \relcell{\texttt{vector\_id}、\texttt{file\_md5}\\\texttt{chunk\_id}、\texttt{text\_content}\\\texttt{safe\_text\_content}\\\texttt{normalized\_text\_}\\\texttt{content}\\\texttt{is\_restricted}\\\texttt{external\_model\_}\\\texttt{allowed}\\\texttt{sensitivity\_level}} & \relcell{保存文本分块、安全视图、归一化视图及敏感元数据，作为向量化写入与检索增强的中间结果} \\
         \bottomrule
     \end{tabular}
     }
@@ -181,9 +275,9 @@
 
 \subsection{知识索引结构}
 
-由于 Elasticsearch 的特性，系统将文本分块与向量结果共同写入 Elasticsearch 索引 \texttt{knowledge\_base}。该索引结构如表 \ref{tab:es-fields} 所示。
+文本分块与向量结果共同写入 Elasticsearch 索引 \texttt{knowledge\_base}；索引同时维护原始文本、安全文本、归一化文本与敏感元数据。其字段结构如表 \ref{tab:es-fields} 所示。
 
-\begin{table}[H]
+\begin{table}[!htbp]
     \centering
     \caption{Elasticsearch 知识索引字段设计}
     \label{tab:es-fields}
@@ -192,17 +286,19 @@
         \toprule
         字段名 & 类型 & 作用说明 \\
         \midrule
-        \texttt{fileMd5} & \texttt{keyword} & 关联原始文件标识，用于结果回填与删除同步 \\
-        \texttt{chunkId} & \texttt{integer} & 标识文件内的分块序号 \\
-        \makecell[l]{\texttt{text}\\\texttt{Content}} & \texttt{text} & 保存可检索文本内容，并配置中文分词器用于全文匹配 \\
-        \texttt{vector} & \makecell[l]{\texttt{dense\_}\\\texttt{vector}} & 保存 2048 维嵌入向量，用于 kNN 语义检索 \\
-        \makecell[l]{\texttt{model}\\\texttt{Version}} & \texttt{keyword} & 标识生成向量所使用的模型版本 \\
-        \texttt{userId} & \texttt{keyword} & 标识上传者，用于权限过滤和结果展示 \\
-        \texttt{orgTag} & \texttt{keyword} & 标识文档所属组织标签，用于检索阶段过滤 \\
-        \texttt{isPublic} & \texttt{boolean} & 标识公开属性，用于跨用户共享资源判断 \\
+        \texttt{fileMd5} & \texttt{keyword} & 原始文件标识，用于结果回填与删除同步 \\
+        \texttt{chunkId} & \texttt{integer} & 分块序号 \\
+        \makecell[l]{\texttt{text}\\\texttt{Content}} & \texttt{text} & 原始文本片段，供内部追溯 \\
+        \makecell[l]{\texttt{safeText}\\\texttt{Content}} & \texttt{text} & 脱敏文本视图，供 Prompt 装配 \\
+        \makecell[l]{\texttt{normalizedText}\\\texttt{Content}} & \texttt{text} & 归一化文本视图，供词法检索 \\
+        \texttt{vector} & \makecell[l]{\texttt{dense\_}\\\texttt{vector}} & 2048 维嵌入向量，供 kNN 检索 \\
+        \texttt{userId} & \texttt{keyword} & 上传者标识，供权限过滤 \\
+        \texttt{orgTag} & \texttt{keyword} & 组织标签，供检索过滤 \\
+        \texttt{isPublic} & \texttt{boolean} & 公开属性，供共享判断 \\
+        \texttt{restricted} & \texttt{boolean} & 受限标记，控制外送与上下文注入 \\
+        \makecell[l]{\texttt{externalModel}\\\texttt{Allowed}} & \texttt{boolean} & 标识片段是否允许进入外部模型调用 \\
+        \makecell[l]{\texttt{sensitivity}\\\texttt{Level}} & \texttt{keyword} & 敏感级别，约束检索、Prompt 与日志 \\
         \bottomrule
     \end{tabularx}
     }
 \end{table}
-
-上述设计使系统形成了“关系型数据库负责业务元数据、对象存储负责原始文件、搜索引擎负责知识检索”的多存储协同结构，为后续实现章节中的关键代码提供了清晰的数据基础。
